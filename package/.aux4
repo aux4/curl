@@ -1,7 +1,7 @@
 {
   "scope": "aux4",
   "name": "curl",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "HTTP client with OAuth2, stdin body, and NDJSON streaming support",
   "license": "Apache-2.0",
   "tags": [
