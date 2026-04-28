@@ -26,6 +26,8 @@ func main() {
 		runOAuthStatus(os.Args[2:])
 	case "oauth-logout":
 		runOAuthLogout(os.Args[2:])
+	case "oauth-set-token":
+		runOAuthSetToken(os.Args[2:])
 	case "auth-request":
 		runAuthRequest(os.Args[2:])
 	case "auth-stream":

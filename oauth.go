@@ -368,6 +368,35 @@ func runOAuthLogout(args []string) {
 	fmt.Fprintf(os.Stderr, "Logged out from %s\n", provider)
 }
 
+// args: provider accessToken tokenFile
+func runOAuthSetToken(args []string) {
+	if len(args) < 2 || args[0] == "" || args[1] == "" {
+		fmt.Fprintf(os.Stderr, "Error: provider and accessToken are required\n")
+		os.Exit(1)
+	}
+
+	provider := args[0]
+	accessToken := args[1]
+
+	tokenFile := ""
+	if len(args) > 2 && args[2] != "" {
+		tokenFile = args[2]
+	}
+
+	path := resolveTokenFile(provider, tokenFile)
+
+	token := &OAuthToken{
+		AccessToken: accessToken,
+	}
+
+	if err := saveToken(path, token); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving token: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Token saved to %s\n", path)
+}
+
 // args: provider tokenFile method url header body showHeaders
 func runAuthRequest(args []string) {
 	if len(args) < 4 {

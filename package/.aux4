@@ -308,6 +308,31 @@
               }
             ]
           }
+        },
+        {
+          "name": "set-token",
+          "execute": [
+            "${packageDir}/aux4-curl oauth-set-token values(provider, accessToken, tokenFile)"
+          ],
+          "help": {
+            "text": "Store an API key or access token directly",
+            "variables": [
+              {
+                "name": "provider",
+                "text": "Provider name",
+                "arg": true
+              },
+              {
+                "name": "accessToken",
+                "text": "API key or access token"
+              },
+              {
+                "name": "tokenFile",
+                "text": "Custom token file path (default: .oauth/<provider>.json)",
+                "default": ""
+              }
+            ]
+          }
         }
       ]
     }
