@@ -1,0 +1,315 @@
+{
+  "scope": "aux4",
+  "name": "curl",
+  "version": "1.1.0",
+  "description": "HTTP client with OAuth2, stdin body, and NDJSON streaming support",
+  "license": "Apache-2.0",
+  "tags": [
+    "aux4",
+    "curl",
+    "http",
+    "oauth",
+    "ndjson",
+    "stream"
+  ],
+  "profiles": [
+    {
+      "name": "main",
+      "commands": [
+        {
+          "name": "curl",
+          "execute": [
+            "profile:curl"
+          ],
+          "help": {
+            "text": "HTTP client with stdin body and NDJSON streaming support"
+          }
+        }
+      ]
+    },
+    {
+      "name": "curl",
+      "commands": [
+        {
+          "name": "request",
+          "execute": [
+            "${packageDir}/aux4-curl request values(method, url, header, body, showHeaders)"
+          ],
+          "help": {
+            "text": "Make an HTTP request",
+            "variables": [
+              {
+                "name": "method",
+                "text": "HTTP method",
+                "default": "GET"
+              },
+              {
+                "name": "url",
+                "text": "Request URL",
+                "arg": true
+              },
+              {
+                "name": "header",
+                "text": "Request header (Name: Value)",
+                "default": "",
+                "multiple": true
+              },
+              {
+                "name": "body",
+                "text": "Request body",
+                "default": ""
+              },
+              {
+                "name": "showHeaders",
+                "text": "Show response headers",
+                "default": "false"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stream",
+          "execute": [
+            "stdin:${packageDir}/aux4-curl stream values(method, url, header, concurrency)"
+          ],
+          "help": {
+            "text": "Stream NDJSON from stdin, call URL per line, output NDJSON",
+            "variables": [
+              {
+                "name": "method",
+                "text": "HTTP method",
+                "default": "POST"
+              },
+              {
+                "name": "url",
+                "text": "Request URL",
+                "arg": true
+              },
+              {
+                "name": "header",
+                "text": "Request header (Name: Value)",
+                "default": "",
+                "multiple": true
+              },
+              {
+                "name": "concurrency",
+                "text": "Number of concurrent requests",
+                "default": "1"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oauth",
+          "execute": [
+            "profile:curl:oauth"
+          ],
+          "help": {
+            "text": "OAuth2 authentication management"
+          }
+        },
+        {
+          "name": "auth-request",
+          "execute": [
+            "${packageDir}/aux4-curl auth-request values(provider, tokenFile, method, url, header, body, showHeaders)"
+          ],
+          "help": {
+            "text": "Make an authenticated HTTP request using OAuth2 token",
+            "variables": [
+              {
+                "name": "provider",
+                "text": "OAuth provider name"
+              },
+              {
+                "name": "tokenFile",
+                "text": "Custom token file path (default: .oauth/<provider>.json)",
+                "default": ""
+              },
+              {
+                "name": "method",
+                "text": "HTTP method",
+                "default": "GET"
+              },
+              {
+                "name": "url",
+                "text": "Request URL",
+                "arg": true
+              },
+              {
+                "name": "header",
+                "text": "Request header (Name: Value)",
+                "default": "",
+                "multiple": true
+              },
+              {
+                "name": "body",
+                "text": "Request body",
+                "default": ""
+              },
+              {
+                "name": "showHeaders",
+                "text": "Show response headers",
+                "default": "false"
+              }
+            ]
+          }
+        },
+        {
+          "name": "auth-stream",
+          "execute": [
+            "stdin:${packageDir}/aux4-curl auth-stream values(provider, tokenFile, method, url, header, concurrency)"
+          ],
+          "help": {
+            "text": "Stream NDJSON with OAuth2 authentication",
+            "variables": [
+              {
+                "name": "provider",
+                "text": "OAuth provider name"
+              },
+              {
+                "name": "tokenFile",
+                "text": "Custom token file path (default: .oauth/<provider>.json)",
+                "default": ""
+              },
+              {
+                "name": "method",
+                "text": "HTTP method",
+                "default": "POST"
+              },
+              {
+                "name": "url",
+                "text": "Request URL",
+                "arg": true
+              },
+              {
+                "name": "header",
+                "text": "Request header (Name: Value)",
+                "default": "",
+                "multiple": true
+              },
+              {
+                "name": "concurrency",
+                "text": "Number of concurrent requests",
+                "default": "1"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "curl:oauth",
+      "commands": [
+        {
+          "name": "login",
+          "execute": [
+            "${packageDir}/aux4-curl oauth-login values(provider, clientId, clientSecret, authUrl, tokenUrl, scopes, callbackPort, tokenFile)"
+          ],
+          "help": {
+            "text": "Authenticate with an OAuth2 provider",
+            "variables": [
+              {
+                "name": "provider",
+                "text": "OAuth provider name",
+                "arg": true
+              },
+              {
+                "name": "clientId",
+                "text": "OAuth client ID"
+              },
+              {
+                "name": "clientSecret",
+                "text": "OAuth client secret"
+              },
+              {
+                "name": "authUrl",
+                "text": "Authorization URL"
+              },
+              {
+                "name": "tokenUrl",
+                "text": "Token exchange URL"
+              },
+              {
+                "name": "scopes",
+                "text": "Comma-separated scopes"
+              },
+              {
+                "name": "callbackPort",
+                "text": "Local callback server port",
+                "default": "9876"
+              },
+              {
+                "name": "tokenFile",
+                "text": "Custom token file path (default: .oauth/<provider>.json)",
+                "default": ""
+              }
+            ]
+          }
+        },
+        {
+          "name": "token",
+          "execute": [
+            "${packageDir}/aux4-curl oauth-token values(provider, tokenFile)"
+          ],
+          "help": {
+            "text": "Get a valid access token, auto-refreshing if expired",
+            "variables": [
+              {
+                "name": "provider",
+                "text": "OAuth provider name",
+                "arg": true
+              },
+              {
+                "name": "tokenFile",
+                "text": "Custom token file path (default: .oauth/<provider>.json)",
+                "default": ""
+              }
+            ]
+          }
+        },
+        {
+          "name": "status",
+          "execute": [
+            "${packageDir}/aux4-curl oauth-status values(provider, tokenFile)"
+          ],
+          "help": {
+            "text": "Show OAuth token status for a provider",
+            "variables": [
+              {
+                "name": "provider",
+                "text": "OAuth provider name",
+                "arg": true
+              },
+              {
+                "name": "tokenFile",
+                "text": "Custom token file path (default: .oauth/<provider>.json)",
+                "default": ""
+              }
+            ]
+          }
+        },
+        {
+          "name": "logout",
+          "execute": [
+            "${packageDir}/aux4-curl oauth-logout values(provider, tokenFile)"
+          ],
+          "help": {
+            "text": "Remove stored OAuth token for a provider",
+            "variables": [
+              {
+                "name": "provider",
+                "text": "OAuth provider name",
+                "arg": true
+              },
+              {
+                "name": "tokenFile",
+                "text": "Custom token file path (default: .oauth/<provider>.json)",
+                "default": ""
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
