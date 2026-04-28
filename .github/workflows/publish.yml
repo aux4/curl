@@ -104,17 +104,33 @@ jobs:
           GOOS=windows GOARCH=arm64 go build -o package/dist/windows/arm64/aux4-curl.exe .
           GOOS=windows GOARCH=386 go build -o package/dist/windows/386/aux4-curl.exe .
 
-      - name: Pull latest aux4 image
-        run: docker pull aux4/aux4:latest
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install aux4
+        run: npm install -g aux4
+
+      - name: Install test package
+        run: aux4 aux4 pkger install aux4/test
+
+      - name: Install curl package locally
+        run: |
+          ln -sf dist/linux/amd64/aux4-curl package/aux4-curl
+          aux4 aux4 pkger build package
+          SCOPE=$(jq -r '.scope' package/.aux4)
+          NAME=$(jq -r '.name' package/.aux4)
+          VERSION=$(jq -r '.version' package/.aux4)
+          aux4 aux4 pkger install-file "package/${SCOPE}_${NAME}_${VERSION}.zip"
+          rm -f package/${SCOPE}_${NAME}_${VERSION}.zip
 
       - name: Run tests
-        run: |
-          docker run --rm \
-            --user $(id -u):$(id -g) \
-            -v $(pwd):/workspace \
-            -w /workspace/package \
-            aux4/aux4:latest \
-            aux4 test run
+        working-directory: package
+        run: aux4 test run
+
+      - name: Pull latest aux4 image
+        run: docker pull aux4/aux4:latest
 
       - name: Build package
         run: |
