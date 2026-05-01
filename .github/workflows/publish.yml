@@ -31,36 +31,66 @@ permissions:
   contents: write
 
 jobs:
-  publish:
+  test-linux:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+
+      - name: Test
+        uses: aux4/test-package-action@v1
+        with:
+          build_command: aux4 builder linux
+
+  test-darwin:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+
+      - name: Test
+        uses: aux4/test-package-action@v1
+        with:
+          build_command: aux4 builder darwin
+
+  publish:
+    needs: [test-linux, test-darwin]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.23'
 
+      - name: Install aux4
+        run: |
+          curl -fsSL https://aux4.sh | sh
+          echo "$HOME/.aux4.config/packages/aux4/aux4" >> $GITHUB_PATH
+
       - name: Build
         run: |
-          # Darwin
-          GOOS=darwin GOARCH=amd64 go build -o package/dist/darwin/amd64/aux4-curl .
-          GOOS=darwin GOARCH=arm64 go build -o package/dist/darwin/arm64/aux4-curl .
-          # Linux
-          GOOS=linux GOARCH=amd64 go build -o package/dist/linux/amd64/aux4-curl .
-          GOOS=linux GOARCH=arm64 go build -o package/dist/linux/arm64/aux4-curl .
-          GOOS=linux GOARCH=386 go build -o package/dist/linux/386/aux4-curl .
-          # Windows
-          GOOS=windows GOARCH=amd64 go build -o package/dist/windows/amd64/aux4-curl.exe .
-          GOOS=windows GOARCH=arm64 go build -o package/dist/windows/arm64/aux4-curl.exe .
-          GOOS=windows GOARCH=386 go build -o package/dist/windows/386/aux4-curl.exe .
+          aux4 build
 
       - name: Publish package
         uses: aux4/publish-package-action@v1
         with:
+          working_directory: package
+          package_directory: .
           level: ${{ inputs.level || 'patch' }}
           aux4_token: ${{ secrets.AUX4_ACCESS_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
