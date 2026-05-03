@@ -5,7 +5,7 @@
 ```beforeAll
 nohup python3 -m http.server 18923 --directory /tmp >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-test-server.pid
-sleep 1
+sleep 3
 echo "test-content" > /tmp/test-file.txt
 ```
 
@@ -58,7 +58,7 @@ class Handler(BaseHTTPRequestHandler):
 HTTPServer(('', 18924), Handler).serve_forever()
 " >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-test-post-server.pid
-sleep 1
+sleep 3
 ```
 
 ```afterAll
