@@ -23,7 +23,7 @@ class Handler(BaseHTTPRequestHandler):
 HTTPServer(('', 18932), Handler).serve_forever()
 " >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-auth-stream-server.pid
-sleep 1
+sleep 3
 
 mkdir -p .oauth
 cat > .oauth/testprovider.json << 'ENDTOKEN'
