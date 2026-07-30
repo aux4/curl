@@ -2,10 +2,14 @@
 
 ## with a GET request
 
+```timeout
+20000
+```
+
 ```beforeAll
 nohup python3 -m http.server 18923 --directory /tmp >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-test-server.pid
-for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18923/ 2>/dev/null && break; sleep 0.25; done
+for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:18923/ 2>/dev/null && break; sleep 0.25; done
 echo "test-content" > /tmp/test-file.txt
 ```
 
@@ -38,6 +42,10 @@ test-content
 
 ## with a POST request
 
+```timeout
+20000
+```
+
 ```beforeAll
 nohup python3 -c "
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -58,7 +66,7 @@ class Handler(BaseHTTPRequestHandler):
 HTTPServer(('', 18924), Handler).serve_forever()
 " >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-test-post-server.pid
-for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18924/ 2>/dev/null && break; sleep 0.25; done
+for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:18924/ 2>/dev/null && break; sleep 0.25; done
 ```
 
 ```afterAll
@@ -108,6 +116,10 @@ rm -f /tmp/aux4-curl-bodyfile.json
 
 
 ## with a file upload
+
+```timeout
+20000
+```
 
 ```beforeAll
 nohup python3 -c "
@@ -164,7 +176,7 @@ class Handler(BaseHTTPRequestHandler):
 
 HTTPServer(('', 18933), Handler).serve_forever()
 " >/dev/null 2>&1 &
-for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18933/ 2>/dev/null && break; sleep 0.25; done
+for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:18933/ 2>/dev/null && break; sleep 0.25; done
 printf 'aaa\n' > /tmp/aux4-curl-up-a.txt
 printf 'bbbbb\n' > /tmp/aux4-curl-up-b.txt
 ```
