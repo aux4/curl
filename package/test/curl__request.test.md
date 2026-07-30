@@ -7,9 +7,20 @@
 ```
 
 ```beforeAll
-nohup python3 -m http.server 18923 --directory /tmp >/dev/null 2>&1 &
-echo $! > /tmp/aux4-curl-test-server.pid
-for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:18923/ 2>/dev/null && break; sleep 0.25; done
+echo "DIAG python3: $(command -v python3) [$(python3 --version 2>&1)]"
+echo "DIAG curl: $(curl --version 2>&1 | head -1)"
+echo "DIAG uname: $(uname -a)"
+nohup python3 -m http.server 18923 --directory /tmp > /tmp/aux4-curl-srv-18923.log 2>&1 &
+SRVPID=$!
+echo $SRVPID > /tmp/aux4-curl-test-server.pid
+for i in $(seq 1 12); do curl -s -o /dev/null --noproxy '*' --connect-timeout 1 --max-time 1 http://127.0.0.1:18923/ 2>/dev/null && break; sleep 0.25; done
+if ! curl -s -o /dev/null --noproxy '*' --max-time 1 http://127.0.0.1:18923/ 2>/dev/null; then
+  echo "DIAG ### 18923 UNREACHABLE after poll ###"
+  echo "DIAG server pid $SRVPID alive: $(kill -0 $SRVPID 2>/dev/null && echo yes || echo no)"
+  echo "DIAG server log:"; cat /tmp/aux4-curl-srv-18923.log 2>/dev/null | sed 's/^/DIAG   /'
+  echo "DIAG listening on 18923:"; (lsof -nP -iTCP:18923 2>/dev/null || netstat -an 2>/dev/null | grep 18923 || echo "  (nothing)") | sed 's/^/DIAG   /'
+  echo "DIAG loopback GET localhost:"; curl -s -o /dev/null -w "DIAG   localhost -> %{http_code} (exit varies)\n" --max-time 1 http://localhost:18923/ 2>&1 || echo "DIAG   localhost unreachable"
+fi
 echo "test-content" > /tmp/test-file.txt
 ```
 
@@ -66,7 +77,7 @@ class Handler(BaseHTTPRequestHandler):
 HTTPServer(('', 18924), Handler).serve_forever()
 " >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-test-post-server.pid
-for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:18924/ 2>/dev/null && break; sleep 0.25; done
+for i in $(seq 1 12); do curl -s -o /dev/null --noproxy '*' --connect-timeout 1 --max-time 1 http://127.0.0.1:18924/ 2>/dev/null && break; sleep 0.25; done
 ```
 
 ```afterAll
@@ -176,7 +187,7 @@ class Handler(BaseHTTPRequestHandler):
 
 HTTPServer(('', 18933), Handler).serve_forever()
 " >/dev/null 2>&1 &
-for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:18933/ 2>/dev/null && break; sleep 0.25; done
+for i in $(seq 1 12); do curl -s -o /dev/null --noproxy '*' --connect-timeout 1 --max-time 1 http://127.0.0.1:18933/ 2>/dev/null && break; sleep 0.25; done
 printf 'aaa\n' > /tmp/aux4-curl-up-a.txt
 printf 'bbbbb\n' > /tmp/aux4-curl-up-b.txt
 ```
