@@ -30,7 +30,7 @@ class Handler(BaseHTTPRequestHandler):
 HTTPServer(('', 18931), Handler).serve_forever()
 " >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-auth-request-server.pid
-sleep 3
+for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18931/ 2>/dev/null && break; sleep 0.25; done
 
 mkdir -p .oauth
 cat > .oauth/testprovider.json << 'ENDTOKEN'

@@ -5,7 +5,7 @@
 ```beforeAll
 nohup python3 -m http.server 18923 --directory /tmp >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-test-server.pid
-sleep 3
+for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18923/ 2>/dev/null && break; sleep 0.25; done
 echo "test-content" > /tmp/test-file.txt
 ```
 
@@ -58,7 +58,7 @@ class Handler(BaseHTTPRequestHandler):
 HTTPServer(('', 18924), Handler).serve_forever()
 " >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-test-post-server.pid
-sleep 3
+for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18924/ 2>/dev/null && break; sleep 0.25; done
 ```
 
 ```afterAll
@@ -164,7 +164,7 @@ class Handler(BaseHTTPRequestHandler):
 
 HTTPServer(('', 18933), Handler).serve_forever()
 " >/dev/null 2>&1 &
-sleep 3
+for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18933/ 2>/dev/null && break; sleep 0.25; done
 printf 'aaa\n' > /tmp/aux4-curl-up-a.txt
 printf 'bbbbb\n' > /tmp/aux4-curl-up-b.txt
 ```

@@ -31,66 +31,62 @@ permissions:
   contents: write
 
 jobs:
-  test-linux:
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: aux4/action@v1
+        with:
+          command: lint
+          strict: 'true'
+
+  test-linux:
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.23'
 
-      - name: Test
-        uses: aux4/test-package-action@v1
+      - uses: aux4/action@v1
         with:
+          command: test
           build_command: aux4 builder linux
 
   test-darwin:
+    needs: [lint]
     runs-on: macos-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.23'
 
-      - name: Test
-        uses: aux4/test-package-action@v1
+      - uses: aux4/action@v1
         with:
+          command: test
           build_command: aux4 builder darwin
 
   publish:
     needs: [test-linux, test-darwin]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.23'
 
-      - name: Install aux4
-        run: |
-          curl -fsSL https://aux4.sh | sh
-          echo "$HOME/.aux4.config/packages/aux4/aux4" >> $GITHUB_PATH
-
-      - name: Build
-        run: |
-          aux4 build
-
-      - name: Publish package
-        uses: aux4/publish-package-action@v1
+      - uses: aux4/action@v1
         with:
-          working_directory: package
-          package_directory: .
+          command: publish
           level: ${{ inputs.level || 'patch' }}
+          build_command: aux4 builder all
           aux4_token: ${{ secrets.AUX4_ACCESS_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
