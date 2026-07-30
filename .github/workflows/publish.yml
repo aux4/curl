@@ -66,6 +66,12 @@ jobs:
         with:
           go-version: '1.23'
 
+      # macos-latest ships Python 3.14, whose http.server leaves the test mock
+      # servers' sockets unreachable; pin 3.12 (matches the Linux runner).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - uses: aux4/action@v1
         with:
           command: test
