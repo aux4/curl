@@ -65,3 +65,21 @@ Provider:      testprovider
 Status:        valid
 Scopes:        read,write
 ```
+
+## authorize url construction
+
+### should append params with & when authUrl already has a query string
+
+```execute
+aux4 curl oauth login gtestprov --clientId CID --clientSecret "" --authUrl "https://accounts.example.com/auth?access_type=offline&prompt=consent" --tokenUrl https://accounts.example.com/token --scopes "openid email" --callbackPort 18939 --tokenFile /tmp/aux4-authurl-token.json >/dev/null 2>/tmp/aux4-authurl.txt &
+LOGIN_PID=$!
+sleep 2
+kill $LOGIN_PID 2>/dev/null
+wait $LOGIN_PID 2>/dev/null
+grep -oE "auth\?access_type=offline&prompt=consent&client_id=CID" /tmp/aux4-authurl.txt | head -1
+rm -f /tmp/aux4-authurl.txt /tmp/aux4-authurl-token.json
+```
+
+```expect
+auth?access_type=offline&prompt=consent&client_id=CID
+```

@@ -1,6 +1,6 @@
 # aux4/curl
 
-HTTP client with OAuth2 authentication, stdin body, and NDJSON streaming support. Similar to curl but designed for piping data and OAuth2 workflows: authenticate with any OAuth2 provider, make authenticated requests, read request bodies from stdin, stream NDJSON input where each JSON line triggers a separate HTTP request, and collect results as NDJSON output.
+HTTP client with OAuth2 authentication and NDJSON streaming support. Similar to curl but designed for OAuth2 workflows: authenticate with any OAuth2 provider, make authenticated requests, upload files and download binary responses, stream NDJSON input where each JSON line triggers a separate HTTP request, and collect results as NDJSON output.
 
 ## Installation
 
@@ -14,8 +14,8 @@ aux4 aux4 pkger install aux4/curl
 # Simple GET request
 aux4 curl request https://api.example.com/users
 
-# POST with body from stdin
-echo '{"name":"Alice"}' | aux4 curl request --method POST --header "Content-Type: application/json" https://api.example.com/users
+# POST with a body
+aux4 curl request --method POST --body '{"name":"Alice"}' --header "Content-Type: application/json" https://api.example.com/users
 
 # OAuth2 login
 aux4 curl oauth login myprovider --clientId abc123 --clientSecret secret --authUrl https://provider.com/oauth --tokenUrl https://provider.com/token --scopes read,write
@@ -31,21 +31,33 @@ cat users.ndjson | aux4 curl stream https://api.example.com/process
 
 ### `aux4 curl request`
 
-Make an HTTP request. Supports all standard HTTP methods, custom headers, and reading the request body from stdin or the `--body` flag.
+Make an HTTP request. Supports all standard HTTP methods, custom headers, request bodies from a string or a file, file uploads, and binary downloads.
 
 ```bash
-aux4 curl request [--method <METHOD>] [--header <Header: Value>] [--body <data>] [--showHeaders <true|false>] <url>
+aux4 curl request [--method <METHOD>] [--header <Header: Value>] [--body <data>] [--showHeaders <true|false>] [--upload <path>] [--uploadField <name>] [--output <path>] <url>
 ```
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--method` | HTTP method (GET, POST, PUT, DELETE, PATCH, etc.) | `GET` |
 | `--header` | Request header in `Name: Value` format (repeatable) | |
-| `--body` | Request body as a string | |
+| `--body` | Request body as a string, or a JSON object of extra form fields when uploading | |
+| `--bodyFile` | Send the contents of this file as the raw request body | |
 | `--showHeaders` | Include response headers in output | `false` |
+| `--upload` | File to send as `multipart/form-data` (repeatable, `field=path` to name the part) | |
+| `--uploadField` | Default form field name for uploaded files | `file` |
+| `--output` | Write the response body to this file instead of stdout | |
 | `url` | Request URL (positional argument) | required |
 
-When data is piped to stdin, it is used as the request body. The `--body` flag takes precedence if both are provided.
+Piping data into `aux4 curl request` does **not** set the request body — aux4 does not forward stdin to it, and forwarding it would make bodyless requests such as a plain `GET` hang. Use `--bodyFile` to send a file's contents (the way to send binary payloads), or `--body` for a string; `--bodyFile` wins if both are given. For one request per line of piped input, use `aux4 curl stream`.
+
+### Uploading files
+
+`--upload` sends a file as `multipart/form-data` — set automatically, with a generated boundary, so no `Content-Type` is needed. To use a different multipart subtype, pass one (e.g. `--header "Content-Type: multipart/related"`); the subtype and its parameters are preserved and the generated boundary is appended. The content type of each part is detected from the file extension, and the method defaults to `POST`. Repeat `--upload` to send several files; by default they share the field name from `--uploadField`, and writing an entry as `field=path` names that part explicitly. When `--body` is given alongside an upload it must be a JSON object, and its entries are sent as additional text fields in the same form.
+
+### Downloading binary responses
+
+`--output` writes the response body to a file rather than stdout, which is required for images, archives, and other binary payloads. If the server returns an error status, the response is written to stderr and **no file is created**, so a failed download never leaves a truncated or error-filled file behind.
 
 #### Examples
 
@@ -56,14 +68,20 @@ aux4 curl request https://api.example.com/users
 # POST with inline body
 aux4 curl request --method POST --body '{"name":"Alice"}' --header "Content-Type: application/json" https://api.example.com/users
 
-# POST with body from stdin
-echo '{"name":"Alice"}' | aux4 curl request --method POST --header "Content-Type: application/json" https://api.example.com/users
-
 # Show response headers
 aux4 curl request --showHeaders true https://api.example.com/health
 
-# Pipe a file as body
-cat payload.json | aux4 curl request --method PUT --header "Content-Type: application/json" https://api.example.com/resource/1
+# Upload a file, with an extra text field in the same form
+aux4 curl request --method POST --upload ./logo.png --uploadField media --body '{"media_category":"tweet_image"}' https://api.example.com/media
+
+# Upload several files, each under its own field name
+aux4 curl request --method POST --upload "avatar=./avatar.png" --upload "banner=./banner.png" https://api.example.com/profile
+
+# Download a binary response to a file
+aux4 curl request --output ./report.pdf https://api.example.com/reports/1
+
+# Send a file's contents as the raw body
+aux4 curl request --method PUT --bodyFile ./payload.json --header "Content-Type: application/json" https://api.example.com/resource/1
 ```
 
 ### `aux4 curl stream`
@@ -104,11 +122,11 @@ cat items.ndjson | aux4 curl stream https://api.example.com/enrich | jq 'select(
 
 ## OAuth2 Authentication
 
-The `oauth` command group manages OAuth2 tokens using the authorization code flow. Tokens are stored locally in `.oauth/<provider>.json` by default. Add `.oauth/` to your `.gitignore`.
+The `oauth` command group manages OAuth2 tokens using the authorization code flow with PKCE (Proof Key for Code Exchange). PKCE is automatically enabled for all providers, ensuring compatibility with providers like X (Twitter) that require it. Tokens are stored locally in `.oauth/<provider>.json` by default. Add `.oauth/` to your `.gitignore`.
 
 ### `aux4 curl oauth login`
 
-Authenticate with an OAuth2 provider. Opens a local callback server and prints a URL to authorize in the browser.
+Authenticate with an OAuth2 provider using the authorization code flow with PKCE. Opens a local callback server and prints a URL to authorize in the browser.
 
 ```bash
 aux4 curl oauth login <provider> --clientId <id> --clientSecret <secret> --authUrl <url> --tokenUrl <url> --scopes <scopes> [--callbackPort <port>] [--tokenFile <path>]
@@ -193,7 +211,7 @@ aux4 curl oauth logout <provider> [--tokenFile <path>]
 Same as `request` but automatically injects the `Authorization: Bearer <token>` header. Reads the stored token for the provider, refreshes if expired, and adds the header before making the request.
 
 ```bash
-aux4 curl auth-request --provider <name> [--tokenFile <path>] [--method <METHOD>] [--header <Header: Value>] [--body <data>] [--showHeaders <true|false>] <url>
+aux4 curl auth-request --provider <name> [--tokenFile <path>] [--method <METHOD>] [--header <Header: Value>] [--body <data>] [--showHeaders <true|false>] [--upload <path>] [--uploadField <name>] [--output <path>] <url>
 ```
 
 | Flag | Description | Default |
@@ -202,9 +220,15 @@ aux4 curl auth-request --provider <name> [--tokenFile <path>] [--method <METHOD>
 | `--tokenFile` | Custom token file path | `.oauth/<provider>.json` |
 | `--method` | HTTP method | `GET` |
 | `--header` | Request header (repeatable) | |
-| `--body` | Request body | |
+| `--body` | Request body, or a JSON object of extra form fields when uploading | |
+| `--bodyFile` | Send the contents of this file as the raw request body | |
 | `--showHeaders` | Include response headers | `false` |
+| `--upload` | File to send as `multipart/form-data` (repeatable, `field=path` to name the part) | |
+| `--uploadField` | Default form field name for uploaded files | `file` |
+| `--output` | Write the response body to this file instead of stdout | |
 | `url` | Request URL (positional argument) | required |
+
+File uploads and binary downloads work exactly as in `request` — see [Uploading files](#uploading-files) and [Downloading binary responses](#downloading-binary-responses).
 
 #### Examples
 

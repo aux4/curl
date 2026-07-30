@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -9,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -25,9 +29,29 @@ type OAuthToken struct {
 	ExpiresAt    string `json:"expiresAt"`
 }
 
+// expandHome turns a leading ~ into the user's home directory. Paths are passed
+// straight to os.ReadFile/os.Create, which do not expand it themselves.
+func expandHome(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/"))
+		}
+	}
+	return path
+}
+
+// resolveTokenFile decides where a provider's token lives. An explicit path
+// wins, then AUX4_CURL_OAUTH_HOME, then the default directory. Note the default
+// is relative to the current directory, so a token saved in one directory is not
+// visible from another — set AUX4_CURL_OAUTH_HOME or pass --tokenFile to get a
+// single store for a machine.
 func resolveTokenFile(provider string, tokenFile string) string {
 	if tokenFile != "" {
-		return tokenFile
+		return expandHome(tokenFile)
+	}
+	if home := os.Getenv("AUX4_CURL_OAUTH_HOME"); home != "" {
+		return filepath.Join(expandHome(home), provider+".json")
 	}
 	return filepath.Join(defaultOAuthDir, provider+".json")
 }
@@ -76,7 +100,9 @@ func refreshAccessToken(token *OAuthToken) error {
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {token.RefreshToken},
 		"client_id":     {token.ClientID},
-		"client_secret": {token.ClientSecret},
+	}
+	if token.ClientSecret != "" {
+		data.Set("client_secret", token.ClientSecret)
 	}
 
 	resp, err := http.PostForm(token.TokenURL, data)
@@ -91,6 +117,9 @@ func refreshAccessToken(token *OAuthToken) error {
 	}
 
 	if errMsg, ok := result["error"]; ok {
+		if desc, ok := result["error_description"]; ok {
+			return fmt.Errorf("refresh failed: %v (%v)", errMsg, desc)
+		}
 		return fmt.Errorf("refresh failed: %v", errMsg)
 	}
 
@@ -126,6 +155,19 @@ func ensureValidToken(provider string, tokenFile string) (*OAuthToken, string, e
 	return token, path, nil
 }
 
+func generateCodeVerifier() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func generateCodeChallenge(verifier string) string {
+	h := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(h[:])
+}
+
 // args: provider clientId clientSecret authUrl tokenUrl scopes callbackPort tokenFile
 func runOAuthLogin(args []string) {
 	if len(args) < 6 {
@@ -155,15 +197,31 @@ func runOAuthLogin(args []string) {
 
 	state := fmt.Sprintf("%d", time.Now().UnixNano())
 
+	codeVerifier, err := generateCodeVerifier()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating PKCE verifier: %v\n", err)
+		os.Exit(1)
+	}
+	codeChallenge := generateCodeChallenge(codeVerifier)
+
 	authParams := url.Values{
-		"client_id":     {clientID},
-		"redirect_uri":  {redirectURI},
-		"response_type": {"code"},
-		"scope":         {scopes},
-		"state":         {state},
+		"client_id":             {clientID},
+		"redirect_uri":          {redirectURI},
+		"response_type":         {"code"},
+		"scope":                 {scopes},
+		"state":                 {state},
+		"code_challenge":        {codeChallenge},
+		"code_challenge_method": {"S256"},
 	}
 
-	fullAuthURL := authURL + "?" + authParams.Encode()
+	// The caller may pass extra provider-specific parameters on authUrl itself
+	// (Google, for example, needs access_type=offline to return a refresh
+	// token), so join with & when a query string is already present.
+	separator := "?"
+	if strings.Contains(authURL, "?") {
+		separator = "&"
+	}
+	fullAuthURL := authURL + separator + authParams.Encode()
 	fmt.Fprintf(os.Stderr, "Open this URL in your browser to authorize:\n\n%s\n\n", fullAuthURL)
 	fmt.Fprintf(os.Stderr, "Waiting for callback on port %s...\n", callbackPort)
 
@@ -218,11 +276,14 @@ func runOAuthLogin(args []string) {
 
 	// Exchange code for tokens
 	data := url.Values{
-		"grant_type":    {"authorization_code"},
-		"code":          {code},
-		"redirect_uri":  {redirectURI},
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
+		"grant_type":   {"authorization_code"},
+		"code":         {code},
+		"redirect_uri": {redirectURI},
+		"client_id":    {clientID},
+		"code_verifier": {codeVerifier},
+	}
+	if clientSecret != "" {
+		data.Set("client_secret", clientSecret)
 	}
 
 	resp, err := http.PostForm(tokenURL, data)
@@ -239,7 +300,15 @@ func runOAuthLogin(args []string) {
 	}
 
 	if errMsg, ok := result["error"]; ok {
+		// error alone is rarely actionable; error_description is where the
+		// provider explains what was actually wrong.
 		fmt.Fprintf(os.Stderr, "Error: %v\n", errMsg)
+		if desc, ok := result["error_description"]; ok {
+			fmt.Fprintf(os.Stderr, "Details: %v\n", desc)
+		}
+		if uri, ok := result["error_uri"]; ok {
+			fmt.Fprintf(os.Stderr, "More: %v\n", uri)
+		}
 		os.Exit(1)
 	}
 
@@ -416,20 +485,17 @@ func runAuthRequest(args []string) {
 	// args[2:] = method, url, header, body, showHeaders
 	requestArgs := args[2:]
 
-	existingHeaders := ""
+	// Headers may arrive as a JSON array (repeatable variable); normalize to a
+	// newline-separated list so the auth header can simply be appended.
+	var headerList []string
 	if len(requestArgs) > 2 {
-		existingHeaders = requestArgs[2]
+		headerList = parseMultiValue(requestArgs[2])
 	}
+	headerList = append(headerList, "Authorization: Bearer "+token.AccessToken)
+	existingHeaders := strings.Join(headerList, "\n")
 
-	authHeader := "Authorization: Bearer " + token.AccessToken
-	if existingHeaders != "" {
-		existingHeaders = existingHeaders + "\n" + authHeader
-	} else {
-		existingHeaders = authHeader
-	}
-
-	// Rebuild args for runRequest: method url header body showHeaders
-	newArgs := make([]string, 5)
+	// Rebuild args for runRequest: method url header body showHeaders upload uploadField output bodyFile
+	newArgs := make([]string, 9)
 	newArgs[0] = requestArgs[0] // method
 	newArgs[1] = requestArgs[1] // url
 	newArgs[2] = existingHeaders
@@ -438,6 +504,18 @@ func runAuthRequest(args []string) {
 	}
 	if len(requestArgs) > 4 {
 		newArgs[4] = requestArgs[4] // showHeaders
+	}
+	if len(requestArgs) > 5 {
+		newArgs[5] = requestArgs[5] // upload
+	}
+	if len(requestArgs) > 6 {
+		newArgs[6] = requestArgs[6] // uploadField
+	}
+	if len(requestArgs) > 7 {
+		newArgs[7] = requestArgs[7] // output
+	}
+	if len(requestArgs) > 8 {
+		newArgs[8] = requestArgs[8] // bodyFile
 	}
 
 	runRequest(newArgs)
@@ -462,17 +540,14 @@ func runAuthStream(args []string) {
 	// args[2:] = method, url, header, concurrency
 	requestArgs := args[2:]
 
-	existingHeaders := ""
+	// Headers may arrive as a JSON array (repeatable variable); normalize to a
+	// newline-separated list so the auth header can simply be appended.
+	var headerList []string
 	if len(requestArgs) > 2 {
-		existingHeaders = requestArgs[2]
+		headerList = parseMultiValue(requestArgs[2])
 	}
-
-	authHeader := "Authorization: Bearer " + token.AccessToken
-	if existingHeaders != "" {
-		existingHeaders = existingHeaders + "\n" + authHeader
-	} else {
-		existingHeaders = authHeader
-	}
+	headerList = append(headerList, "Authorization: Bearer "+token.AccessToken)
+	existingHeaders := strings.Join(headerList, "\n")
 
 	newArgs := make([]string, 4)
 	newArgs[0] = requestArgs[0] // method

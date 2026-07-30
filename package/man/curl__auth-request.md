@@ -7,16 +7,22 @@ This is the primary way to make authenticated API calls through `aux4 curl`. Any
 #### Usage
 
 ```bash
-aux4 curl auth-request --provider <name> [--tokenFile <path>] [--method <METHOD>] [--header <Header: Value>] [--body <data>] [--showHeaders <true|false>] <url>
+aux4 curl auth-request --provider <name> [--tokenFile <path>] [--method <METHOD>] [--header <Header: Value>] [--body <data>] [--bodyFile <path>] [--showHeaders <true|false>] [--upload <path>] [--uploadField <name>] [--output <path>] <url>
 ```
 
 --provider      OAuth provider name (must have a stored token from `oauth login`)
 --tokenFile     Custom token file path (default: .oauth/<provider>.json)
 --method        HTTP method to use (default: GET)
 --header        Request header in Name: Value format, can be repeated
---body          Request body as a string
+--body          Request body as a string, or JSON object of extra form fields when uploading
+--bodyFile      Send the contents of this file as the raw request body
 --showHeaders   Show response status and headers (default: false)
+--upload        File to send as multipart/form-data, can be repeated; use field=path to name the part
+--uploadField   Default form field name for uploaded files (default: file)
+--output        Write the response body to this file instead of stdout
 url             The target URL (required, positional)
+
+File uploads and binary downloads behave exactly as in `curl request`; the only difference is that the OAuth `Authorization` header is added for you. Uploading defaults the method to `POST`, and a failed download writes no file.
 
 #### Example
 

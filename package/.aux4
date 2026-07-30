@@ -2,7 +2,7 @@
   "scope": "aux4",
   "name": "curl",
   "version": "1.1.4",
-  "description": "HTTP client with OAuth2, stdin body, and NDJSON streaming support",
+  "description": "HTTP client with OAuth2 PKCE, file upload/download, and NDJSON streaming support",
   "license": "Apache-2.0",
   "tags": [
     "aux4",
@@ -33,7 +33,7 @@
         {
           "name": "request",
           "execute": [
-            "${packageDir}/aux4-curl request values(method, url, header, body, showHeaders)"
+            "${packageDir}/aux4-curl request values(method, url, header*, body, showHeaders, upload*, uploadField, output, bodyFile)"
           ],
           "help": {
             "text": "Make an HTTP request",
@@ -63,6 +63,27 @@
                 "name": "showHeaders",
                 "text": "Show response headers",
                 "default": "false"
+              },
+              {
+                "name": "upload",
+                "text": "File to upload as multipart/form-data; repeatable, use field=path to name the part",
+                "default": "",
+                "multiple": true
+              },
+              {
+                "name": "uploadField",
+                "text": "Form field name for the uploaded file",
+                "default": "file"
+              },
+              {
+                "name": "output",
+                "text": "Write the response body to this file instead of stdout",
+                "default": ""
+              },
+              {
+                "name": "bodyFile",
+                "text": "Send the contents of this file as the raw request body",
+                "default": ""
               }
             ]
           }
@@ -70,7 +91,7 @@
         {
           "name": "stream",
           "execute": [
-            "stdin:${packageDir}/aux4-curl stream values(method, url, header, concurrency)"
+            "stdin:${packageDir}/aux4-curl stream values(method, url, header*, concurrency)"
           ],
           "help": {
             "text": "Stream NDJSON from stdin, call URL per line, output NDJSON",
@@ -111,7 +132,7 @@
         {
           "name": "auth-request",
           "execute": [
-            "${packageDir}/aux4-curl auth-request values(provider, tokenFile, method, url, header, body, showHeaders)"
+            "${packageDir}/aux4-curl auth-request values(provider, tokenFile, method, url, header*, body, showHeaders, upload*, uploadField, output, bodyFile)"
           ],
           "help": {
             "text": "Make an authenticated HTTP request using OAuth2 token",
@@ -150,6 +171,27 @@
                 "name": "showHeaders",
                 "text": "Show response headers",
                 "default": "false"
+              },
+              {
+                "name": "upload",
+                "text": "File to upload as multipart/form-data; repeatable, use field=path to name the part",
+                "default": "",
+                "multiple": true
+              },
+              {
+                "name": "uploadField",
+                "text": "Form field name for the uploaded file",
+                "default": "file"
+              },
+              {
+                "name": "output",
+                "text": "Write the response body to this file instead of stdout",
+                "default": ""
+              },
+              {
+                "name": "bodyFile",
+                "text": "Send the contents of this file as the raw request body",
+                "default": ""
               }
             ]
           }
@@ -157,7 +199,7 @@
         {
           "name": "auth-stream",
           "execute": [
-            "stdin:${packageDir}/aux4-curl auth-stream values(provider, tokenFile, method, url, header, concurrency)"
+            "stdin:${packageDir}/aux4-curl auth-stream values(provider, tokenFile, method, url, header*, concurrency)"
           ],
           "help": {
             "text": "Stream NDJSON with OAuth2 authentication",
