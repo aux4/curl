@@ -7,25 +7,22 @@
 ```
 
 ```beforeAll
-nohup python3 -c "
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import json
-
-class Handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length) if length else b''
-        auth = self.headers.get('Authorization', '')
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        response = json.dumps({'auth': auth, 'received': json.loads(body) if body else None})
-        self.wfile.write(response.encode())
-    def log_message(self, format, *args):
-        pass
-
-HTTPServer(('127.0.0.1', 18932), Handler).serve_forever()
-" >/dev/null 2>&1 &
+cat > /tmp/aux4-curl-srv-18932.js << 'ENDJS'
+const http = require('http');
+http.createServer((req, res) => {
+  const auth = req.headers['authorization'] || '';
+  const chunks = [];
+  req.on('data', c => chunks.push(c));
+  req.on('end', () => {
+    const b = Buffer.concat(chunks).toString();
+    let received = null;
+    try { received = b ? JSON.parse(b) : null; } catch (e) { received = null; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ auth: auth, received: received }));
+  });
+}).listen(18932, '127.0.0.1');
+ENDJS
+nohup node /tmp/aux4-curl-srv-18932.js >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-auth-stream-server.pid
 for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18932/ 2>/dev/null && break; sleep 0.25; done
 

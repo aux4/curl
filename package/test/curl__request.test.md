@@ -7,10 +7,21 @@
 ```
 
 ```beforeAll
-nohup python3 -m http.server 18923 --bind 127.0.0.1 --directory /tmp >/dev/null 2>&1 &
-echo $! > /tmp/aux4-curl-test-server.pid
-for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18923/ 2>/dev/null && break; sleep 0.25; done
+cat > /tmp/aux4-curl-srv-18923.js << 'ENDJS'
+const http = require('http'), fs = require('fs'), path = require('path');
+http.createServer((req, res) => {
+  const f = path.join('/tmp', decodeURIComponent(req.url.split('?')[0]));
+  fs.readFile(f, (e, d) => {
+    if (e) { res.writeHead(404); res.end('not found\n'); return; }
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+    res.end(d);
+  });
+}).listen(18923, '127.0.0.1');
+ENDJS
 echo "test-content" > /tmp/test-file.txt
+nohup node /tmp/aux4-curl-srv-18923.js >/dev/null 2>&1 &
+echo $! > /tmp/aux4-curl-test-server.pid
+for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18923/test-file.txt 2>/dev/null && break; sleep 0.25; done
 ```
 
 ```afterAll
@@ -35,7 +46,7 @@ aux4 curl request --showHeaders true http://127.0.0.1:18923/test-file.txt
 ```
 
 ```expect:partial
-HTTP/1.0 200 OK
+HTTP/1.1 200 OK
 **
 test-content
 ```
@@ -47,24 +58,21 @@ test-content
 ```
 
 ```beforeAll
-nohup python3 -c "
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import json
-
-class Handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length) if length else b''
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        response = json.dumps({'received': json.loads(body) if body else None})
-        self.wfile.write(response.encode())
-    def log_message(self, format, *args):
-        pass
-
-HTTPServer(('127.0.0.1', 18924), Handler).serve_forever()
-" >/dev/null 2>&1 &
+cat > /tmp/aux4-curl-srv-18924.js << 'ENDJS'
+const http = require('http');
+http.createServer((req, res) => {
+  const chunks = [];
+  req.on('data', c => chunks.push(c));
+  req.on('end', () => {
+    const body = Buffer.concat(chunks).toString();
+    let received = null;
+    try { received = body ? JSON.parse(body) : null; } catch (e) { received = null; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ received: received }));
+  });
+}).listen(18924, '127.0.0.1');
+ENDJS
+nohup node /tmp/aux4-curl-srv-18924.js >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-test-post-server.pid
 for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18924/ 2>/dev/null && break; sleep 0.25; done
 ```
@@ -111,7 +119,7 @@ rm -f /tmp/aux4-curl-bodyfile.json
 ```
 
 ```expect
-{"received": {"name": "Alice"}}
+{"received":{"name":"Alice"}}
 ```
 
 
@@ -122,60 +130,74 @@ rm -f /tmp/aux4-curl-bodyfile.json
 ```
 
 ```beforeAll
-nohup python3 -c "
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from email.parser import BytesParser
-from email.policy import default
-import json, threading, os
-threading.Timer(90, lambda: os._exit(0)).start()
+cat > /tmp/aux4-curl-srv-18933.js << 'ENDJS'
+const http = require('http');
+setTimeout(() => process.exit(0), 90000);
 
-class Handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        ctype = self.headers.get('Content-Type', '')
-        raw = self.rfile.read(int(self.headers.get('Content-Length', 0)))
-        if self.path == '/ctype':
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
-            self.end_headers()
-            self.wfile.write((ctype.split(';')[0] + '\n').encode())
-            return
-        msg = BytesParser(policy=default).parsebytes(b'Content-Type: ' + ctype.encode() + b'\r\n\r\n' + raw)
-        parts = []
-        for part in msg.iter_parts():
-            name = part.get_param('name', header='content-disposition')
-            filename = part.get_filename()
-            payload = part.get_payload(decode=True) or b''
-            if filename:
-                parts.append(name + ':' + filename + ':' + str(len(payload)))
-            else:
-                parts.append(name + '=' + payload.decode())
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/plain')
-        self.end_headers()
-        self.wfile.write((' '.join(parts) + '\n').encode())
-    def do_GET(self):
-        if self.path == '/ctype':
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
-            self.end_headers()
-            self.wfile.write((self.headers.get('Content-Type', '').split(';')[0] + '\n').encode())
-            return
-        if self.path == '/headers':
-            names = sorted(k + ': ' + v for k, v in self.headers.items() if k.lower().startswith('x-'))
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
-            self.end_headers()
-            self.wfile.write((' | '.join(names) + '\n').encode())
-            return
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/octet-stream')
-        self.end_headers()
-        self.wfile.write(bytes(range(256)))
-    def log_message(self, format, *args):
-        pass
+function splitBuffer(buf, sep) {
+  const parts = [];
+  let start = 0, idx;
+  while ((idx = buf.indexOf(sep, start)) !== -1) {
+    parts.push(buf.slice(start, idx));
+    start = idx + sep.length;
+  }
+  parts.push(buf.slice(start));
+  return parts;
+}
 
-HTTPServer(('127.0.0.1', 18933), Handler).serve_forever()
-" >/dev/null 2>&1 &
+http.createServer((req, res) => {
+  const ctype = req.headers['content-type'] || '';
+  if (req.method === 'POST') {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      if (req.url === '/ctype') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end(ctype.split(';')[0] + '\n');
+        return;
+      }
+      const bm = ctype.match(/boundary=([^;]+)/);
+      const boundary = bm ? bm[1].trim() : '';
+      const body = Buffer.concat(chunks);
+      const out = [];
+      for (const p of splitBuffer(body, Buffer.from('--' + boundary))) {
+        const he = p.indexOf('\r\n\r\n');
+        if (he < 0) continue;
+        const head = p.slice(0, he).toString();
+        let content = p.slice(he + 4);
+        if (content.length >= 2 && content.slice(-2).toString() === '\r\n') content = content.slice(0, -2);
+        const nm = head.match(/name="([^"]*)"/);
+        if (!nm) continue;
+        const fm = head.match(/filename="([^"]*)"/);
+        if (fm) out.push(nm[1] + ':' + fm[1] + ':' + content.length);
+        else out.push(nm[1] + '=' + content.toString());
+      }
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end(out.join(' ') + '\n');
+    });
+    return;
+  }
+  if (req.url === '/ctype') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end(ctype.split(';')[0] + '\n');
+    return;
+  }
+  if (req.url === '/headers') {
+    const raw = req.rawHeaders, xs = [];
+    for (let i = 0; i < raw.length; i += 2) {
+      if (raw[i].toLowerCase().startsWith('x-')) xs.push(raw[i] + ': ' + raw[i + 1]);
+    }
+    xs.sort();
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end(xs.join(' | ') + '\n');
+    return;
+  }
+  res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+  res.end(Buffer.from(Array.from({ length: 256 }, (_, i) => i)));
+}).listen(18933, '127.0.0.1');
+ENDJS
+nohup node /tmp/aux4-curl-srv-18933.js >/dev/null 2>&1 &
+echo $! > /tmp/aux4-curl-up-server.pid
 for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18933/ 2>/dev/null && break; sleep 0.25; done
 printf 'aaa\n' > /tmp/aux4-curl-up-a.txt
 printf 'bbbbb\n' > /tmp/aux4-curl-up-b.txt

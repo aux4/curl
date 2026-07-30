@@ -7,34 +7,26 @@
 ```
 
 ```beforeAll
-nohup python3 -c "
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
-import json
-
-class Handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length).decode()
-        params = dict(p.split('=') for p in body.split('&'))
-        if params.get('grant_type') == 'authorization_code':
-            response = json.dumps({
-                'access_token': 'test-access-token',
-                'refresh_token': 'test-refresh-token',
-                'expires_in': 3600
-            })
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(response.encode())
-        else:
-            self.send_response(400)
-            self.end_headers()
-    def log_message(self, format, *args):
-        pass
-
-HTTPServer(('127.0.0.1', 18930), Handler).serve_forever()
-" >/dev/null 2>&1 &
+cat > /tmp/aux4-curl-srv-18930.js << 'ENDJS'
+const http = require('http');
+http.createServer((req, res) => {
+  const chunks = [];
+  req.on('data', c => chunks.push(c));
+  req.on('end', () => {
+    const body = Buffer.concat(chunks).toString();
+    const params = {};
+    body.split('&').forEach(p => { const i = p.indexOf('='); params[p.slice(0, i)] = p.slice(i + 1); });
+    if (params.grant_type === 'authorization_code') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ access_token: 'test-access-token', refresh_token: 'test-refresh-token', expires_in: 3600 }));
+    } else {
+      res.writeHead(400);
+      res.end();
+    }
+  });
+}).listen(18930, '127.0.0.1');
+ENDJS
+nohup node /tmp/aux4-curl-srv-18930.js >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-oauth-server.pid
 for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18930/ 2>/dev/null && break; sleep 0.25; done
 ```

@@ -5,25 +5,20 @@
 ```
 
 ```beforeAll
-nohup python3 -c "
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import json
-
-class Handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length) if length else b''
-        data = json.loads(body)
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        response = json.dumps({'processed': True, 'id': data.get('id')})
-        self.wfile.write(response.encode())
-    def log_message(self, format, *args):
-        pass
-
-HTTPServer(('127.0.0.1', 18925), Handler).serve_forever()
-" >/dev/null 2>&1 &
+cat > /tmp/aux4-curl-srv-18925.js << 'ENDJS'
+const http = require('http');
+http.createServer((req, res) => {
+  const chunks = [];
+  req.on('data', c => chunks.push(c));
+  req.on('end', () => {
+    let data = {};
+    try { data = JSON.parse(Buffer.concat(chunks).toString()); } catch (e) { data = {}; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ processed: true, id: data.id !== undefined ? data.id : null }));
+  });
+}).listen(18925, '127.0.0.1');
+ENDJS
+nohup node /tmp/aux4-curl-srv-18925.js >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-test-stream-server.pid
 for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18925/ 2>/dev/null && break; sleep 0.25; done
 ```
