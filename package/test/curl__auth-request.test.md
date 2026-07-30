@@ -31,10 +31,10 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-HTTPServer(('', 18931), Handler).serve_forever()
+HTTPServer(('127.0.0.1', 18931), Handler).serve_forever()
 " >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-auth-request-server.pid
-for i in $(seq 1 12); do curl -s -o /dev/null --noproxy '*' --connect-timeout 1 --max-time 1 http://127.0.0.1:18931/ 2>/dev/null && break; sleep 0.25; done
+for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18931/ 2>/dev/null && break; sleep 0.25; done
 
 mkdir -p .oauth
 cat > .oauth/testprovider.json << 'ENDTOKEN'
@@ -60,7 +60,7 @@ rm -rf .oauth
 ### should inject authorization header on GET
 
 ```execute
-aux4 curl auth-request --provider testprovider http://localhost:18931/test
+aux4 curl auth-request --provider testprovider http://127.0.0.1:18931/test
 ```
 
 ```expect:json
@@ -73,7 +73,7 @@ aux4 curl auth-request --provider testprovider http://localhost:18931/test
 ### should inject authorization header on POST
 
 ```execute
-aux4 curl auth-request --provider testprovider --method POST --body '{"name":"test"}' --header "Content-Type: application/json" http://localhost:18931/data
+aux4 curl auth-request --provider testprovider --method POST --body '{"name":"test"}' --header "Content-Type: application/json" http://127.0.0.1:18931/data
 ```
 
 ```expect:json
@@ -90,7 +90,7 @@ aux4 curl auth-request --provider testprovider --method POST --body '{"name":"te
 ### should show error
 
 ```execute
-aux4 curl auth-request --provider nonexistent http://localhost:18931/test
+aux4 curl auth-request --provider nonexistent http://127.0.0.1:18931/test
 ```
 
 ```error:partial

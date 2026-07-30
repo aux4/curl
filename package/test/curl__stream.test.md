@@ -22,10 +22,10 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-HTTPServer(('', 18925), Handler).serve_forever()
+HTTPServer(('127.0.0.1', 18925), Handler).serve_forever()
 " >/dev/null 2>&1 &
 echo $! > /tmp/aux4-curl-test-stream-server.pid
-for i in $(seq 1 12); do curl -s -o /dev/null --noproxy '*' --connect-timeout 1 --max-time 1 http://127.0.0.1:18925/ 2>/dev/null && break; sleep 0.25; done
+for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18925/ 2>/dev/null && break; sleep 0.25; done
 ```
 
 ```afterAll
@@ -38,7 +38,7 @@ rm -f /tmp/aux4-curl-test-stream-server.pid
 ### should process single JSON line
 
 ```execute
-echo '{"id":1}' | aux4 curl stream http://localhost:18925/
+echo '{"id":1}' | aux4 curl stream http://127.0.0.1:18925/
 ```
 
 ```expect:json
@@ -57,7 +57,7 @@ echo '{"id":1}' | aux4 curl stream http://localhost:18925/
 ### should process multiple JSON lines
 
 ```execute
-printf '{"id":1}\n{"id":2}\n' | aux4 curl stream http://localhost:18925/
+printf '{"id":1}\n{"id":2}\n' | aux4 curl stream http://127.0.0.1:18925/
 ```
 
 ```expect:partial
@@ -68,7 +68,7 @@ printf '{"id":1}\n{"id":2}\n' | aux4 curl stream http://localhost:18925/
 ### should skip empty lines
 
 ```execute
-printf '\n{"id":3}\n\n' | aux4 curl stream http://localhost:18925/
+printf '\n{"id":3}\n\n' | aux4 curl stream http://127.0.0.1:18925/
 ```
 
 ```expect:json
@@ -87,7 +87,7 @@ printf '\n{"id":3}\n\n' | aux4 curl stream http://localhost:18925/
 ### should report invalid JSON on stderr
 
 ```execute
-printf 'not-json\n{"id":4}\n' | aux4 curl stream http://localhost:18925/
+printf 'not-json\n{"id":4}\n' | aux4 curl stream http://127.0.0.1:18925/
 ```
 
 ```error:partial
@@ -99,7 +99,7 @@ Error: invalid JSON*
 ### should handle concurrent requests
 
 ```execute
-printf '{"id":10}\n{"id":11}\n{"id":12}\n' | aux4 curl stream --concurrency 3 http://localhost:18925/ | sort
+printf '{"id":10}\n{"id":11}\n{"id":12}\n' | aux4 curl stream --concurrency 3 http://127.0.0.1:18925/ | sort
 ```
 
 ```expect:partial
