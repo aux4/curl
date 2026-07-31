@@ -156,6 +156,26 @@ http.createServer((req, res) => {
         res.end(ctype.split(';')[0] + '\n');
         return;
       }
+      if (req.url === '/related') {
+        // multipart/related parts carry Content-Type, not Content-Disposition.
+        const rbm = ctype.match(/boundary=([^;]+)/);
+        const rboundary = rbm ? rbm[1].trim() : '';
+        const rbody = Buffer.concat(chunks);
+        const parts = [];
+        for (const p of splitBuffer(rbody, Buffer.from('--' + rboundary))) {
+          const he = p.indexOf('\r\n\r\n');
+          if (he < 0) continue;
+          const head = p.slice(0, he).toString();
+          let content = p.slice(he + 4);
+          if (content.length >= 2 && content.slice(-2).toString() === '\r\n') content = content.slice(0, -2);
+          const cm = head.match(/Content-Type:\s*([^\r\n]+)/i);
+          if (!cm) continue;
+          parts.push(cm[1].trim() + '=' + content.toString().trim());
+        }
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end(parts.join(' | ') + '\n');
+        return;
+      }
       const bm = ctype.match(/boundary=([^;]+)/);
       const boundary = bm ? bm[1].trim() : '';
       const body = Buffer.concat(chunks);
@@ -287,4 +307,26 @@ aux4 curl request --method POST --upload /tmp/aux4-curl-up-a.txt --header "Conte
 
 ```expect
 multipart/related
+```
+
+### should build a multipart/related body: json metadata part then media part
+
+```execute
+aux4 curl request --method POST --header "Content-Type: multipart/related" --body '{"name":"doc","mimeType":"application/vnd.google-apps.document"}' --upload text/markdown=/tmp/aux4-curl-up-a.txt http://127.0.0.1:18933/related
+```
+
+```expect
+application/json; charset=UTF-8={"name":"doc","mimeType":"application/vnd.google-apps.document"} | text/markdown=aaa
+```
+
+### should detect the media part content type from the file extension
+
+```execute
+printf '# hi\n' > /tmp/aux4-curl-up.md
+aux4 curl request --method POST --header "Content-Type: multipart/related" --body '{"name":"doc"}' --upload /tmp/aux4-curl-up.md http://127.0.0.1:18933/related
+rm -f /tmp/aux4-curl-up.md
+```
+
+```expect
+application/json; charset=UTF-8={"name":"doc"} | text/markdown; charset=utf-8=# hi
 ```

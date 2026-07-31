@@ -8,10 +8,28 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+func init() {
+	// Go's mime package only knows a handful of types and otherwise relies on
+	// the OS mime.types database, which a minimal Linux runner may not have.
+	// Register the source formats Drive can convert into a Doc so uploads get
+	// the right Content-Type everywhere (Markdown especially — without this a
+	// .md file is treated as plain text and its formatting is lost).
+	_ = mime.AddExtensionType(".md", "text/markdown")
+	_ = mime.AddExtensionType(".markdown", "text/markdown")
+	_ = mime.AddExtensionType(".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+	_ = mime.AddExtensionType(".odt", "application/vnd.oasis.opendocument.text")
+	_ = mime.AddExtensionType(".rtf", "application/rtf")
+	_ = mime.AddExtensionType(".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	_ = mime.AddExtensionType(".ods", "application/vnd.oasis.opendocument.spreadsheet")
+	_ = mime.AddExtensionType(".csv", "text/csv")
+	_ = mime.AddExtensionType(".tsv", "text/tab-separated-values")
+}
 
 // parseMultiValue reads a repeatable variable. aux4 passes `values(name*)` as a
 // JSON array; a plain string (or newline-separated list) is accepted too so a
@@ -162,6 +180,98 @@ func multipartContentTypeFor(headers []string, boundary string) string {
 	return "multipart/form-data; boundary=" + boundary
 }
 
+// isMultipartRelated reports whether the caller asked for a multipart/related
+// body via the Content-Type header (as opposed to the default form-data).
+func isMultipartRelated(headers []string) bool {
+	for _, h := range headers {
+		parts := strings.SplitN(h, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(parts[0]), "Content-Type") {
+			continue
+		}
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(parts[1])), "multipart/related")
+	}
+	return false
+}
+
+// buildRelatedBody builds a multipart/related body: an optional JSON metadata
+// part followed by one media part per upload. This is the shape Google APIs
+// expect for uploadType=multipart (Drive convert-on-import, Gmail media, ...).
+// The body is the metadata part verbatim (as application/json), NOT split into
+// form fields the way form-data uploads are. Each upload is a bare path (media
+// Content-Type detected from the extension) or "mime/type=path" to set it
+// explicitly.
+func buildRelatedBody(uploads []string, metadata string) (io.Reader, string, error) {
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+
+	if strings.TrimSpace(metadata) != "" {
+		var probe interface{}
+		if err := json.Unmarshal([]byte(metadata), &probe); err != nil {
+			return nil, "", fmt.Errorf("body must be JSON for a multipart/related request: %v", err)
+		}
+		header := textproto.MIMEHeader{}
+		header.Set("Content-Type", "application/json; charset=UTF-8")
+		part, err := writer.CreatePart(header)
+		if err != nil {
+			return nil, "", err
+		}
+		if _, err := io.WriteString(part, metadata); err != nil {
+			return nil, "", err
+		}
+	}
+
+	for _, upload := range uploads {
+		upload = strings.TrimSpace(upload)
+		if upload == "" {
+			continue
+		}
+
+		contentType := ""
+		path := upload
+		// "mime/type=path" sets the media part's Content-Type explicitly; a bare
+		// path falls back to detection from the file extension.
+		if index := strings.Index(upload, "="); index > 0 {
+			candidate := upload[:index]
+			if strings.Contains(candidate, "/") {
+				contentType = candidate
+				path = upload[index+1:]
+			}
+		}
+		if contentType == "" {
+			contentType = mime.TypeByExtension(filepath.Ext(path))
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
+		}
+
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, "", fmt.Errorf("could not open file to upload: %v", err)
+		}
+		header := textproto.MIMEHeader{}
+		header.Set("Content-Type", contentType)
+		part, err := writer.CreatePart(header)
+		if err != nil {
+			file.Close()
+			return nil, "", err
+		}
+		if _, err := io.Copy(part, file); err != nil {
+			file.Close()
+			return nil, "", err
+		}
+		file.Close()
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, "", err
+	}
+
+	return &buffer, writer.Boundary(), nil
+}
+
 // args: method url header body showHeaders upload uploadField output bodyFile
 func runRequest(args []string) {
 	if len(args) < 2 {
@@ -246,7 +356,12 @@ func runRequest(args []string) {
 			method = "POST"
 		}
 		var err error
-		reqBody, multipartBoundary, err = buildMultipartBody(uploads, uploadField, body)
+		if isMultipartRelated(headers) {
+			// Drive/Gmail style: JSON metadata part + media part(s).
+			reqBody, multipartBoundary, err = buildRelatedBody(uploads, body)
+		} else {
+			reqBody, multipartBoundary, err = buildMultipartBody(uploads, uploadField, body)
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)

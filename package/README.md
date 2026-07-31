@@ -53,7 +53,18 @@ Piping data into `aux4 curl request` does **not** set the request body — aux4 
 
 ### Uploading files
 
-`--upload` sends a file as `multipart/form-data` — set automatically, with a generated boundary, so no `Content-Type` is needed. To use a different multipart subtype, pass one (e.g. `--header "Content-Type: multipart/related"`); the subtype and its parameters are preserved and the generated boundary is appended. The content type of each part is detected from the file extension, and the method defaults to `POST`. Repeat `--upload` to send several files; by default they share the field name from `--uploadField`, and writing an entry as `field=path` names that part explicitly. When `--body` is given alongside an upload it must be a JSON object, and its entries are sent as additional text fields in the same form.
+`--upload` sends a file as `multipart/form-data` — set automatically, with a generated boundary, so no `Content-Type` is needed. The content type of each part is detected from the file extension, and the method defaults to `POST`. Repeat `--upload` to send several files; by default they share the field name from `--uploadField`, and writing an entry as `field=path` names that part explicitly. When `--body` is given alongside a form-data upload it must be a JSON object, and its entries are sent as additional text fields in the same form.
+
+**`multipart/related`** (for Google Drive/Gmail-style uploads): pass `--header "Content-Type: multipart/related"` and the body is built differently — `--body` becomes a single JSON metadata part (`application/json`, sent verbatim rather than split into fields), followed by one media part per `--upload`. Each media part's `Content-Type` comes from the file extension, or write the entry as `mime/type=path` to set it explicitly (e.g. `--upload "text/markdown=article.md"`). The generated boundary is appended and `Content-Length` is set. This is the shape Drive's `uploadType=multipart` expects for converting a file into a Doc, Sheet or Slides deck.
+
+```bash
+# Import Markdown as a Google Doc (Drive converts on upload)
+aux4 curl auth-request --provider google --method POST \
+  --header "Content-Type: multipart/related" \
+  --url "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart" \
+  --body '{"name":"My Doc","mimeType":"application/vnd.google-apps.document"}' \
+  --upload "text/markdown=./article.md"
+```
 
 ### Downloading binary responses
 
@@ -123,6 +134,8 @@ cat items.ndjson | aux4 curl stream https://api.example.com/enrich | jq 'select(
 ## OAuth2 Authentication
 
 The `oauth` command group manages OAuth2 tokens using the authorization code flow with PKCE (Proof Key for Code Exchange). PKCE is automatically enabled for all providers, ensuring compatibility with providers like X (Twitter) that require it. Tokens are stored locally in `.oauth/<provider>.json` by default. Add `.oauth/` to your `.gitignore`.
+
+> **Token storage.** Tokens are written as a plaintext JSON file with `0600` permissions (owner read/write only) in a `0700` directory — the same posture as the `gcloud`, `aws` and `gh` CLIs. The file contains the access token, the long-lived refresh token, and the client id/secret, so it should be treated as a credential: keep it out of version control and off shared machines. It is not encrypted at rest; anyone who can read the file as your user can use the tokens.
 
 ### `aux4 curl oauth login`
 
