@@ -7,11 +7,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
-// args: method url header concurrency
+// args: method url header concurrency maxTime
 func runStream(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Error: URL is required\n")
@@ -42,6 +44,16 @@ func runStream(args []string) {
 		}
 	}
 
+	// --maxTime: per-request timeout in seconds (decimals allowed). 0 = no timeout.
+	// A timeout surfaces as a transport error per line, keeping the resilient
+	// {"error","input","status":0} contract (the stream still exits 0).
+	maxTime := 0.0
+	if len(args) > 4 && args[4] != "" {
+		if v, err := strconv.ParseFloat(args[4], 64); err == nil && v > 0 {
+			maxTime = v
+		}
+	}
+
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
@@ -50,6 +62,9 @@ func runStream(args []string) {
 	var wg sync.WaitGroup
 
 	client := &http.Client{}
+	if maxTime > 0 {
+		client.Timeout = time.Duration(maxTime * float64(time.Second))
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()

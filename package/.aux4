@@ -33,7 +33,7 @@
         {
           "name": "request",
           "execute": [
-            "${packageDir}/aux4-curl request values(method, url, header*, body, showHeaders, upload*, uploadField, output, bodyFile)"
+            "${packageDir}/aux4-curl request values(method, url, header*, body, showHeaders, upload*, uploadField, output, bodyFile, status, maxTime)"
           ],
           "help": {
             "text": "Make an HTTP request",
@@ -84,6 +84,16 @@
                 "name": "bodyFile",
                 "text": "Send the contents of this file as the raw request body",
                 "default": ""
+              },
+              {
+                "name": "status",
+                "text": "Print only the numeric HTTP status code and exit 0 (transport failure prints nothing and exits 1)",
+                "default": "false"
+              },
+              {
+                "name": "maxTime",
+                "text": "Request timeout in seconds (decimals allowed, e.g. 2.5); 0 means no timeout",
+                "default": "0"
               }
             ]
           }
@@ -91,7 +101,7 @@
         {
           "name": "stream",
           "execute": [
-            "stdin:${packageDir}/aux4-curl stream values(method, url, header*, concurrency)"
+            "stdin:${packageDir}/aux4-curl stream values(method, url, header*, concurrency, maxTime)"
           ],
           "help": {
             "text": "Stream NDJSON from stdin, call URL per line, output NDJSON",
@@ -116,6 +126,11 @@
                 "name": "concurrency",
                 "text": "Number of concurrent requests",
                 "default": "1"
+              },
+              {
+                "name": "maxTime",
+                "text": "Per-request timeout in seconds (decimals allowed, e.g. 2.5); 0 means no timeout. A timeout yields {\"error\",\"input\",\"status\":0} for that line",
+                "default": "0"
               }
             ]
           }

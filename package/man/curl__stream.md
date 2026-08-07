@@ -14,15 +14,18 @@ The `Content-Type: application/json` header is set automatically on every reques
 
 Use `--concurrency` to control how many requests are made in parallel. With concurrency greater than 1, output order may differ from input order.
 
+Use `--maxTime` to set a per-request timeout in **seconds** (decimals allowed, e.g. `2.5`); `0` or omitting it means no timeout (the default, backward compatible). A timeout is treated as a transport error for that line, keeping the resilient contract: the line's output object is `{"error":"…timeout…","input":…,"status":0}` and the stream still exits `0`. One slow or hung upstream therefore never aborts the whole batch.
+
 #### Usage
 
 ```bash
-aux4 curl stream [--method <METHOD>] [--header <Header: Value>] [--concurrency <N>] <url>
+aux4 curl stream [--method <METHOD>] [--header <Header: Value>] [--concurrency <N>] [--maxTime <seconds>] <url>
 ```
 
 --method       HTTP method to use (default: POST)
 --header       Request header in Name: Value format, can be repeated
 --concurrency  Number of concurrent requests (default: 1)
+--maxTime      Per-request timeout in seconds, decimals allowed; 0 means no timeout (default: 0)
 url            The target URL (required, positional)
 
 #### Example
@@ -44,4 +47,15 @@ cat records.ndjson | aux4 curl stream --concurrency 5 --header "Authorization: B
 ```text
 {"body":{"processed":true},"input":{"id":1},"status":200}
 {"body":{"processed":true},"input":{"id":2},"status":200}
+```
+
+Bound each request with a timeout — a slow line yields a `status:0` error object instead of stalling the batch:
+
+```bash
+cat records.ndjson | aux4 curl stream --maxTime 5 https://api.example.com/batch
+```
+
+```text
+{"body":{"processed":true},"input":{"id":1},"status":200}
+{"error":"Post \"https://api.example.com/batch\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)","input":{"id":2},"status":0}
 ```

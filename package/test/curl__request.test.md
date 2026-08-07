@@ -330,3 +330,115 @@ rm -f /tmp/aux4-curl-up.md
 ```expect
 application/json; charset=UTF-8={"name":"doc"} | text/markdown; charset=utf-8=# hi
 ```
+
+## with --status
+
+```timeout
+20000
+```
+
+```beforeAll
+cat > /tmp/aux4-curl-srv-18955.js << 'ENDJS'
+const http = require('http');
+http.createServer((req, res) => {
+  if (req.url === '/missing') { res.writeHead(404); res.end('not found\n'); return; }
+  if (req.url === '/slow') { setTimeout(() => { res.writeHead(200); res.end('late\n'); }, 3000); return; }
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('ok\n');
+}).listen(18955, '127.0.0.1');
+ENDJS
+nohup node /tmp/aux4-curl-srv-18955.js >/dev/null 2>&1 &
+echo $! > /tmp/aux4-curl-status-server.pid
+for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18955/ 2>/dev/null && break; sleep 0.25; done
+```
+
+```afterAll
+kill $(cat /tmp/aux4-curl-status-server.pid) 2>/dev/null
+rm -f /tmp/aux4-curl-status-server.pid
+```
+
+### should print only the status code for a 200
+
+```execute
+aux4 curl request --status true http://127.0.0.1:18955/ < /dev/null
+```
+
+```expect
+200
+```
+
+### should print only the status code for a 404 and still exit 0
+
+```execute
+aux4 curl request --status true http://127.0.0.1:18955/missing < /dev/null
+echo "exit=$?"
+```
+
+```expect
+404
+exit=0
+```
+
+### should print nothing and exit 1 on a transport failure
+
+```execute
+aux4 curl request --status true http://127.0.0.1:1/ < /dev/null
+echo "exit=$?"
+```
+
+```expect
+exit=1
+```
+
+```error:partial
+Error: *
+```
+
+## with --maxTime
+
+```timeout
+20000
+```
+
+```beforeAll
+cat > /tmp/aux4-curl-srv-18956.js << 'ENDJS'
+const http = require('http');
+http.createServer((req, res) => {
+  setTimeout(() => { res.writeHead(200); res.end('late\n'); }, 3000);
+}).listen(18956, '127.0.0.1');
+ENDJS
+nohup node /tmp/aux4-curl-srv-18956.js >/dev/null 2>&1 &
+echo $! > /tmp/aux4-curl-maxtime-server.pid
+for i in $(seq 1 40); do curl -s -o /dev/null --max-time 1 http://127.0.0.1:18956/ 2>/dev/null; nc -z 127.0.0.1 18956 2>/dev/null && break; sleep 0.25; done
+```
+
+```afterAll
+kill $(cat /tmp/aux4-curl-maxtime-server.pid) 2>/dev/null
+rm -f /tmp/aux4-curl-maxtime-server.pid
+```
+
+### should fail with a transport error when the timeout is exceeded
+
+```execute
+aux4 curl request --maxTime 1 http://127.0.0.1:18956/slow < /dev/null
+echo "exit=$?"
+```
+
+```expect
+exit=1
+```
+
+```error:partial
+Error: *Timeout*
+```
+
+### should print nothing and exit 1 with --status when the timeout is exceeded
+
+```execute
+aux4 curl request --status true --maxTime 1 http://127.0.0.1:18956/slow < /dev/null
+echo "exit=$?"
+```
+
+```expect
+exit=1
+```

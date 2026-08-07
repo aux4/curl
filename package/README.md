@@ -34,7 +34,7 @@ cat users.ndjson | aux4 curl stream https://api.example.com/process
 Make an HTTP request. Supports all standard HTTP methods, custom headers, request bodies from a string or a file, file uploads, and binary downloads.
 
 ```bash
-aux4 curl request [--method <METHOD>] [--header <Header: Value>] [--body <data>] [--showHeaders <true|false>] [--upload <path>] [--uploadField <name>] [--output <path>] <url>
+aux4 curl request [--method <METHOD>] [--header <Header: Value>] [--body <data>] [--showHeaders <true|false>] [--upload <path>] [--uploadField <name>] [--output <path>] [--status <true|false>] [--maxTime <seconds>] <url>
 ```
 
 | Flag | Description | Default |
@@ -47,6 +47,8 @@ aux4 curl request [--method <METHOD>] [--header <Header: Value>] [--body <data>]
 | `--upload` | File to send as `multipart/form-data` (repeatable, `field=path` to name the part) | |
 | `--uploadField` | Default form field name for uploaded files | `file` |
 | `--output` | Write the response body to this file instead of stdout | |
+| `--status` | Print only the numeric HTTP status code and exit 0 (transport failure prints nothing and exits 1) | `false` |
+| `--maxTime` | Request timeout in seconds (decimals allowed); `0` means no timeout | `0` |
 | `url` | Request URL (positional argument) | required |
 
 Piping data into `aux4 curl request` does **not** set the request body — aux4 does not forward stdin to it, and forwarding it would make bodyless requests such as a plain `GET` hang. Use `--bodyFile` to send a file's contents (the way to send binary payloads), or `--body` for a string; `--bodyFile` wins if both are given. For one request per line of piped input, use `aux4 curl stream`.
@@ -69,6 +71,27 @@ aux4 curl auth-request --provider google --method POST \
 ### Downloading binary responses
 
 `--output` writes the response body to a file rather than stdout, which is required for images, archives, and other binary payloads. If the server returns an error status, the response is written to stderr and **no file is created**, so a failed download never leaves a truncated or error-filled file behind.
+
+### Health checks and timeouts
+
+`--status` prints **only** the numeric HTTP status code and nothing else — no body, headers, or output file. It exits `0` for any status class, so `200`, `404` and `503` all succeed and you can capture a "down" code in a pipeline or a monitor. `--status` overrides `--showHeaders` and `--output`. A **transport failure** — DNS, connection refused, TLS, or a `--maxTime` timeout — prints nothing to stdout, writes the error to stderr, and exits `1`, distinguishing an unreachable host from a real status code.
+
+`--maxTime` bounds the request with a timeout in **seconds** (decimals allowed, e.g. `2.5`). `0` or omitting it means no timeout (the default). Exceeding it fails like any transport error: an error on stderr and exit `1` (with `--status`, empty stdout + exit `1`). This is the primitive `aux4/uptime` uses for command-based health probes.
+
+```bash
+# Print just the status code
+aux4 curl request --status true https://example.com
+# -> 200
+
+# Fail fast if the host is slow or hung
+aux4 curl request --maxTime 2.5 https://example.com
+
+# Bounded health probe
+aux4 curl request --status true --maxTime 2 https://example.com
+# -> 200
+```
+
+**Note:** `--status` is a boolean flag — pass it as `--status true`, or write it bare **after** the URL (`aux4 curl request https://example.com --status`). A bare `--status` before the URL would consume the URL as its value (the same rule that applies to `--showHeaders`).
 
 #### Examples
 
@@ -100,7 +123,7 @@ aux4 curl request --method PUT --bodyFile ./payload.json --header "Content-Type:
 Read NDJSON (newline-delimited JSON) from stdin. For each JSON line, make an HTTP request to the given URL with that line as the body. Output results as NDJSON, one JSON object per line.
 
 ```bash
-aux4 curl stream [--method <METHOD>] [--header <Header: Value>] [--concurrency <N>] <url>
+aux4 curl stream [--method <METHOD>] [--header <Header: Value>] [--concurrency <N>] [--maxTime <seconds>] <url>
 ```
 
 | Flag | Description | Default |
@@ -108,12 +131,15 @@ aux4 curl stream [--method <METHOD>] [--header <Header: Value>] [--concurrency <
 | `--method` | HTTP method | `POST` |
 | `--header` | Request header in `Name: Value` format (repeatable) | |
 | `--concurrency` | Number of concurrent requests | `1` |
+| `--maxTime` | Per-request timeout in seconds (decimals allowed); `0` means no timeout | `0` |
 | `url` | Request URL (positional argument) | required |
 
 Each output line is a JSON object with:
-- `status` — HTTP status code (or `0` on connection error)
+- `status` — HTTP status code (or `0` on connection error or timeout)
 - `body` — Response body (parsed as JSON if valid, otherwise a string)
 - `input` — The original input JSON that triggered this request
+
+`--maxTime` sets a per-request timeout. A timed-out line is treated as a transport error — it emits `{"error":"…timeout…","input":…,"status":0}` and the stream still exits `0`, so one slow upstream never aborts the batch.
 
 #### Examples
 
@@ -129,6 +155,9 @@ cat updates.ndjson | aux4 curl stream --method PUT --header "Authorization: Bear
 
 # Chain with jq for filtering
 cat items.ndjson | aux4 curl stream https://api.example.com/enrich | jq 'select(.status == 200) | .body'
+
+# Bound each request with a timeout (slow lines become status:0 error objects)
+cat records.ndjson | aux4 curl stream --maxTime 5 https://api.example.com/batch
 ```
 
 ## OAuth2 Authentication

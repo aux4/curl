@@ -11,7 +11,9 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 func init() {
@@ -272,7 +274,7 @@ func buildRelatedBody(uploads []string, metadata string) (io.Reader, string, err
 	return &buffer, writer.Boundary(), nil
 }
 
-// args: method url header body showHeaders upload uploadField output bodyFile
+// args: method url header body showHeaders upload uploadField output bodyFile status maxTime
 func runRequest(args []string) {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Error: URL is required\n")
@@ -323,6 +325,20 @@ func runRequest(args []string) {
 	bodyFile := ""
 	if len(args) > 8 {
 		bodyFile = args[8]
+	}
+
+	// --status: print only the numeric HTTP status code and nothing else.
+	statusOnly := false
+	if len(args) > 9 && args[9] == "true" {
+		statusOnly = true
+	}
+
+	// --maxTime: request timeout in seconds (decimals allowed). 0 = no timeout.
+	maxTime := 0.0
+	if len(args) > 10 && args[10] != "" {
+		if v, err := strconv.ParseFloat(args[10], 64); err == nil && v > 0 {
+			maxTime = v
+		}
 	}
 
 	var reqBody io.Reader
@@ -406,12 +422,25 @@ func runRequest(args []string) {
 	}
 
 	client := &http.Client{}
+	if maxTime > 0 {
+		client.Timeout = time.Duration(maxTime * float64(time.Second))
+	}
 	resp, err := client.Do(req)
 	if err != nil {
+		// Transport failure (DNS/refused/TLS/timeout). With --status, keep stdout
+		// empty and exit non-zero so callers can distinguish "unreachable" from a
+		// real HTTP status code.
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
+
+	// --status short-circuits everything else: emit just the code and exit 0
+	// regardless of status class, so 200/404/503 all succeed for health checks.
+	if statusOnly {
+		fmt.Fprintf(os.Stdout, "%d\n", resp.StatusCode)
+		return
+	}
 
 	if showHeaders {
 		fmt.Fprintf(os.Stdout, "HTTP/%d.%d %s\n", resp.ProtoMajor, resp.ProtoMinor, resp.Status)

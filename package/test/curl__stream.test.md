@@ -102,3 +102,38 @@ printf '{"id":10}\n{"id":11}\n{"id":12}\n' | aux4 curl stream --concurrency 3 ht
 *"id":11*
 *"id":12*
 ```
+
+## with --maxTime timeout
+
+```timeout
+20000
+```
+
+```beforeAll
+cat > /tmp/aux4-curl-srv-18926.js << 'ENDJS'
+const http = require('http');
+http.createServer((req, res) => {
+  setTimeout(() => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); }, 3000);
+}).listen(18926, '127.0.0.1');
+ENDJS
+nohup node /tmp/aux4-curl-srv-18926.js >/dev/null 2>&1 &
+echo $! > /tmp/aux4-curl-stream-timeout-server.pid
+for i in $(seq 1 40); do nc -z 127.0.0.1 18926 2>/dev/null && break; sleep 0.25; done
+```
+
+```afterAll
+kill $(cat /tmp/aux4-curl-stream-timeout-server.pid) 2>/dev/null
+rm -f /tmp/aux4-curl-stream-timeout-server.pid
+```
+
+### should emit a status 0 error line and exit 0 when the timeout is exceeded
+
+```execute
+echo '{"id":1}' | aux4 curl stream --maxTime 1 http://127.0.0.1:18926/
+echo "exit=$?"
+```
+
+```expect:partial
+*"status":0*
+exit=0
+```

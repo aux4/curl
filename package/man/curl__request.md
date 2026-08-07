@@ -22,10 +22,14 @@ The request is sent as `multipart/form-data` automatically — you do not need t
 
 Use `--output` to write the response body to a file instead of stdout — necessary for binary responses such as images or documents. If the server returns an error status, the response is printed to stderr and **no file is written**, so a failed download never leaves a corrupt file behind.
 
+Use `--status true` to print **only** the numeric HTTP status code (e.g. `200`) and nothing else — no body, no headers, no output file. The command exits `0` regardless of the status class, so `200`, `404` and `503` all succeed. This makes it a health-probe primitive usable in pipelines and monitoring: a "down" host returns a code you can capture. `--status` overrides `--showHeaders` and `--output`. A **transport failure** (DNS, connection refused, TLS, or a `--maxTime` timeout) prints nothing to stdout, writes the error to stderr, and exits `1` — distinguishing "unreachable" from a real HTTP status code.
+
+Use `--maxTime` to set a request timeout in **seconds** (decimals allowed, e.g. `2.5`). It maps to the HTTP client timeout covering the whole request. `0` or omitting it means no timeout (the default, backward compatible). When the timeout is exceeded the request fails like any other transport error: an error message on stderr and exit `1` (and, with `--status`, empty stdout + exit `1`).
+
 #### Usage
 
 ```bash
-aux4 curl request [--method <METHOD>] [--header <Header: Value>] [--body <data>] [--bodyFile <path>] [--showHeaders <true|false>] [--upload <path>] [--uploadField <name>] [--output <path>] <url>
+aux4 curl request [--method <METHOD>] [--header <Header: Value>] [--body <data>] [--bodyFile <path>] [--showHeaders <true|false>] [--upload <path>] [--uploadField <name>] [--output <path>] [--status <true|false>] [--maxTime <seconds>] <url>
 ```
 
 --method       HTTP method to use (default: GET)
@@ -36,6 +40,8 @@ aux4 curl request [--method <METHOD>] [--header <Header: Value>] [--body <data>]
 --upload       File to send as multipart/form-data, can be repeated; use field=path to name the part
 --uploadField  Default form field name for uploaded files (default: file)
 --output       Write the response body to this file instead of stdout
+--status       Print only the numeric HTTP status code and exit 0; transport failure prints nothing and exits 1 (default: false)
+--maxTime      Request timeout in seconds, decimals allowed; 0 means no timeout (default: 0)
 url            The target URL (required, positional)
 
 #### Example
@@ -89,4 +95,32 @@ Download a binary response to a file:
 
 ```bash
 aux4 curl request --output ./logo.png https://httpbin.org/image/png
+```
+
+Print only the HTTP status code (health probe):
+
+```bash
+aux4 curl request --status true https://example.com
+```
+
+```text
+200
+```
+
+`--status` is a boolean flag, so pass it as `--status true`, or write it bare **after** the URL (`aux4 curl request https://example.com --status`). A bare `--status` placed **before** the URL would swallow the URL as its value — the same rule as `--showHeaders`.
+
+Fail fast with a timeout (exits non-zero on a slow or hung host):
+
+```bash
+aux4 curl request --maxTime 2.5 https://example.com
+```
+
+Combine both for a bounded health check:
+
+```bash
+aux4 curl request --status true --maxTime 2 https://example.com
+```
+
+```text
+200
 ```
