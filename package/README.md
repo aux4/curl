@@ -1,6 +1,6 @@
 # aux4/curl
 
-HTTP client with OAuth2 authentication and NDJSON streaming support. Similar to curl but designed for OAuth2 workflows: authenticate with any OAuth2 provider, make authenticated requests, upload files and download binary responses, stream NDJSON input where each JSON line triggers a separate HTTP request, and collect results as NDJSON output.
+HTTP client with OAuth2 authentication and NDJSON streaming support. Similar to curl but designed for authenticated workflows: log in to any OAuth2 provider interactively or register a machine-to-machine credential endpoint, make authenticated requests without ever handling the token yourself, upload files and download binary responses, stream NDJSON input where each JSON line triggers a separate HTTP request, and collect results as NDJSON output.
 
 ## Installation
 
@@ -17,11 +17,14 @@ aux4 curl request https://api.example.com/users
 # POST with a body
 aux4 curl request --method POST --body '{"name":"Alice"}' --header "Content-Type: application/json" https://api.example.com/users
 
-# OAuth2 login
+# OAuth2 login (interactive, opens a browser)
 aux4 curl oauth login myprovider --clientId abc123 --clientSecret secret --authUrl https://provider.com/oauth --tokenUrl https://provider.com/token --scopes read,write
 
-# Authenticated request (auto-injects Bearer token)
-aux4 curl auth-request --provider myprovider https://api.provider.com/v1/me
+# Machine-to-machine auth (no browser, token fetched and cached automatically)
+aux4 curl auth add myapi --tokenUrl https://auth.example.com/oauth/token --clientId abc123 --clientSecret secret
+
+# Authenticated request (auto-injects Bearer token, renews it when it expires)
+aux4 curl auth-request --provider myapi https://api.example.com/v1/me
 
 # Stream NDJSON: each line becomes a request, results streamed as NDJSON
 cat users.ndjson | aux4 curl stream https://api.example.com/process
@@ -178,7 +181,8 @@ aux4 curl oauth login <provider> --clientId <id> --clientSecret <secret> --authU
 |------|-------------|---------|
 | `provider` | Provider name (positional argument) | required |
 | `--clientId` | OAuth client ID | required |
-| `--clientSecret` | OAuth client secret | required |
+| `--clientSecret` | OAuth client secret | required unless `--clientSecretRef` is given |
+| `--clientSecretRef` | Secret reference holding the client secret, `<provider>/<vault>/<item>/<field>` | |
 | `--authUrl` | Authorization endpoint URL | required |
 | `--tokenUrl` | Token exchange endpoint URL | required |
 | `--scopes` | Comma-separated scopes | required |
@@ -217,7 +221,7 @@ curl -H "Authorization: Bearer $TOKEN" https://api.pinterest.com/v5/user_account
 
 ### `aux4 curl oauth status`
 
-Show token status, scopes, expiry, and whether a refresh token is available.
+Show token status, scopes, expiry, how the token was obtained, and whether it can be renewed.
 
 ```bash
 aux4 curl oauth status <provider> [--tokenFile <path>]
@@ -233,8 +237,10 @@ aux4 curl oauth status pinterest
 Provider:      pinterest
 Status:        valid
 Scopes:        boards:read,pins:read,pins:write
+Grant:         authorization_code
 Expires at:    2026-04-28T12:30:00Z
 Refresh token: yes
+Can renew:     yes
 Token file:    .oauth/pinterest.json
 ```
 
@@ -246,11 +252,219 @@ Remove the stored token file for a provider. Does not revoke the token on the pr
 aux4 curl oauth logout <provider> [--tokenFile <path>]
 ```
 
+## Machine-to-Machine Authentication
+
+The `auth` command group covers the case where a service issues a token to a client presenting credentials — no browser, no user. Register the credential endpoint once under a name, and every request that names it obtains, caches and renews its own token.
+
+```bash
+aux4 curl auth add billing --tokenUrl https://auth.example.com/oauth/token --clientId my-client --clientSecret s3cr3t --scopes "invoices:read"
+aux4 curl auth-request --provider billing https://api.example.com/v1/invoices
+```
+
+The token is fetched once, reused for every call while it is still valid, and fetched again once it expires. Nothing in your scripts ever touches it.
+
+Auths share the token store with `oauth`, so `auth-request`, `auth-stream` and `oauth token` accept either kind of name. The only difference is how the token was obtained.
+
+> **Token storage.** The stored file holds the client secret as well as the token, with the same `0600` posture described under [OAuth2 Authentication](#oauth2-authentication). Keep `.oauth/` out of version control.
+
+### `aux4 curl auth add`
+
+Register a credential endpoint under a name.
+
+```bash
+aux4 curl auth add <name> --tokenUrl <url> [--preset <preset>] [--clientId <id>] [--clientSecret <secret>] [--scopes <scopes>] [--audience <audience>] [--method <METHOD>] [--contentType <form|json>] [--credentialsIn <body|header>] [--header <Header: Value>] [--body <data>] [--tokenPath <path>] [--expiresPath <path>] [--expiresIn <seconds>] [--authHeader <template>] [--verify <true|false>] [--tokenFile <path>]
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `name` | Name used to reference this auth (positional argument) | required |
+| `--tokenUrl` | URL of the endpoint that issues the token | required |
+| `--preset` | Defaults for the request and the response | `client-credentials` |
+| `--clientId` | Client ID sent to the token endpoint | |
+| `--clientSecret` | Client secret sent to the token endpoint | |
+| `--scopes` | Space-separated scopes to request | |
+| `--audience` | Audience to request, for providers that require one | |
+| `--method` | HTTP method for the token request | `POST` |
+| `--contentType` | How credentials are encoded: `form` or `json` | from preset |
+| `--credentialsIn` | Send credentials in the `body` or as HTTP Basic in the `header` | from preset |
+| `--header` | Extra header on the token request (repeatable) | |
+| `--body` | Verbatim token request body, replacing the generated one | |
+| `--tokenPath` | Path to the token in the response | from preset |
+| `--expiresPath` | Path to the expiry in the response | |
+| `--expiresIn` | Fallback lifetime in seconds | |
+| `--authHeader` | Header template for API calls | `Authorization: Bearer ${token}` |
+| `--verify` | Fetch a token immediately to check the configuration | `true` |
+| `--tokenFile` | Custom token file path | `.oauth/<name>.json` |
+
+By default `add` calls the endpoint once, so a wrong URL or a bad secret fails right there instead of surfacing as a confusing 401 later. With `--verify false` nothing is requested until the first call that needs a token.
+
+### Presets
+
+A preset picks the defaults for how credentials are sent and where the token is read from. Each of its defaults can be overridden on its own, so a preset is a starting point rather than a mode.
+
+| Preset | Sends | Reads token from | Reads expiry from |
+|--------|-------|------------------|-------------------|
+| `client-credentials` | form body, `grant_type=client_credentials` | `access_token`, then `token` | `expires_in`, then `exp` |
+| `client-credentials-basic` | the same, credentials as HTTP Basic | `access_token`, then `token` | `expires_in`, then `exp` |
+| `jwt` | form body | `token`, then `access_token` | `exp`, then `expires_in` |
+| `json` | JSON body `{"clientId": ..., "clientSecret": ...}` | `token`, then `access_token` | `expires_in`, then `exp` |
+
+```bash
+# A provider that accepts only HTTP Basic
+aux4 curl auth add payments --preset client-credentials-basic \
+  --tokenUrl https://api.payments.example/oauth2/token \
+  --clientId pk_live_123 --clientSecret sk_live_456
+
+# A login endpoint that is not OAuth at all and returns a JWT
+aux4 curl auth add legacy --preset jwt --contentType json \
+  --tokenUrl https://legacy.example.com/api/login \
+  --clientId svc-account --clientSecret hunter2
+```
+
+### Reading the token from the response
+
+`--tokenPath` says where the token is, using the same path syntax as `aux4 json get`:
+
+```bash
+aux4 curl auth add nested --preset json \
+  --tokenUrl https://api.example.com/session \
+  --clientId id --clientSecret secret \
+  --tokenPath '$.data.credentials.accessToken' \
+  --expiresPath '$.data.credentials.ttlSeconds'
+```
+
+Without it, the two names for the chosen preset are tried in order and nothing further is guessed. If neither is present the command fails and prints the response so you can see what to point `--tokenPath` at.
+
+**Note:** responses that carry both an `access_token` and an `id_token` are why the list stops at two. A longer guess list would eventually return a token that authenticates nothing.
+
+### Expiry
+
+The first source that yields an answer decides when the token is renewed:
+
+1. `--expiresPath`, when given
+2. `expires_in` / `expires_at` in the response
+3. the `exp` claim, when the token is a JWT
+4. `--expiresIn`, as a fixed lifetime
+5. a one hour default
+
+A JWT's `exp` is read without verifying its signature — the token is opaque to the client and there is no key to verify against, and it is used only to decide when to renew. Anything that is not a JWT, or carries no usable `exp`, falls through to the next source.
+
+Renewal happens shortly before the deadline rather than after it, so a token cannot expire in the middle of the request it was fetched for. If an API rejects a token anyway — revoked early, or a clock further out of step than expected — the request is retried once with a freshly fetched token. Concurrent callers are serialized, so a burst of requests that all need a new token produces one fetch rather than one each.
+
+### Sending the token
+
+APIs that do not use bearer tokens can set the header template:
+
+```bash
+aux4 curl auth add keyed --tokenUrl https://auth.example.com/token \
+  --clientId id --clientSecret secret \
+  --authHeader 'X-API-Key: ${token}'
+```
+
+### Defining auths in config.yaml
+
+An auth can live in a config file instead of being registered on each machine. Put the definition under a config profile and every machine that has the file can authenticate — no `auth add`, no setup step:
+
+```yaml
+config:
+  prod:
+    auth:
+      billing:
+        tokenUrl: https://auth.example.com/oauth/token
+        preset: client-credentials
+        clientId: my-client
+        clientSecretRef: aux4/Work/Billing API/clientSecret
+        scopes: invoices:read
+```
+
+```bash
+aux4 curl auth-request --provider billing --configFile config.yaml --config prod https://api.example.com/v1/invoices
+```
+
+The definition comes from the file; the token is fetched on first use and cached locally exactly as before. The config file is the source of truth for *how* to obtain a token, so changing an endpoint or a scope there takes effect immediately — only the cached token is local state.
+
+`--configFile` and `--config` work the same way on `auth-request`, `auth-stream` and `auth token`.
+
+### Keeping the secret out of the file
+
+`clientSecretRef` names the secret instead of holding it, so the file is safe to commit:
+
+```yaml
+clientSecretRef: aux4/Work/Billing API/clientSecret
+#                └──┬─┘ └───────┬──────┘ └────┬────┘
+#              provider    vault/item        field
+```
+
+It is resolved through [`aux4/secret`](https://hub.aux4.io/r/public/packages/aux4/secret) when a token is needed, so the secret can live wherever you keep secrets — an encrypted local file (`aux4/secret-aux4`), the OS keystore (`aux4/secret-os`), 1Password, or anything else implementing the provider contract.
+
+**Note:** the reference is deliberately not written as a `secret://` URI. aux4 resolves any parameter whose whole value is one *before* the command runs, so a URI passed to `auth add` would arrive already resolved and be written into the config file in the clear — the exact leak this field prevents.
+
+`auth add --save true` writes the definition into the config file for you:
+
+```bash
+aux4 curl auth add billing \
+  --tokenUrl https://auth.example.com/oauth/token \
+  --clientId my-client \
+  --clientSecretRef 'aux4/Work/Billing API/clientSecret' \
+  --scopes "invoices:read" \
+  --configFile config.yaml --config prod --save true
+```
+
+The rest of the file is preserved, and only the reference is written — never a secret. Passing an inline `--clientSecret` together with `--save` is refused rather than silently writing a credential into a file destined for version control.
+
+The same reference works for the interactive flow:
+
+```bash
+aux4 curl oauth login pinterest --clientSecretRef 'aux4/Work/Pinterest/clientSecret' --clientId abc123 ...
+```
+
+In both flows the **reference** is what gets stored, never the resolved secret. A client-credentials token re-resolves it on every renewal; an interactive login re-resolves it on refresh. So the secret exists only for the duration of the request that needs it — it is not written into `.oauth/<name>.json`, into config.yaml, into shell history, or into `ps`.
+
+### `aux4 curl auth token`
+
+Print a valid token to stdout, fetching a new one first if the stored one has expired.
+
+```bash
+aux4 curl auth token <name> [--tokenFile <path>]
+```
+
+### `aux4 curl auth status`
+
+Show the stored configuration and token state.
+
+```bash
+aux4 curl auth status <name> [--tokenFile <path>]
+```
+
+```text
+Provider:      billing
+Status:        valid
+Scopes:        invoices:read
+Grant:         client_credentials
+Preset:        client-credentials
+Expires at:    2026-08-18T14:22:05Z
+Refresh token: no
+Can renew:     yes
+Token file:    .oauth/billing.json
+```
+
+`Refresh token` and `Can renew` answer different questions. A client credentials token never has a refresh token and does not need one — it renews by presenting its credentials again.
+
+### `aux4 curl auth remove`
+
+Remove a stored auth and its cached token. Does not revoke the token on the provider side.
+
+```bash
+aux4 curl auth remove <name> [--tokenFile <path>]
+```
+
 ## Authenticated Requests
 
 ### `aux4 curl auth-request`
 
-Same as `request` but automatically injects the `Authorization: Bearer <token>` header. Reads the stored token for the provider, refreshes if expired, and adds the header before making the request.
+Same as `request` but automatically injects the auth header. Reads the stored token for the given name, renews it if it has expired, and adds the header before making the request. `--provider` accepts either an `oauth login` provider or an `auth add` name.
+
+If the API rejects the token with a 401, the token is renewed and the request replayed once. A 401 that renewal cannot fix is returned as the response, unchanged.
 
 ```bash
 aux4 curl auth-request --provider <name> [--tokenFile <path>] [--method <METHOD>] [--header <Header: Value>] [--body <data>] [--showHeaders <true|false>] [--upload <path>] [--uploadField <name>] [--output <path>] <url>
@@ -258,7 +472,7 @@ aux4 curl auth-request --provider <name> [--tokenFile <path>] [--method <METHOD>
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--provider` | OAuth provider name | required |
+| `--provider` | OAuth provider or auth name | required |
 | `--tokenFile` | Custom token file path | `.oauth/<provider>.json` |
 | `--method` | HTTP method | `GET` |
 | `--header` | Request header (repeatable) | |
@@ -287,7 +501,9 @@ aux4 curl auth-request --provider pinterest --method POST \
 
 ### `aux4 curl auth-stream`
 
-Same as `stream` but automatically injects the `Authorization: Bearer <token>` header for each request. Reads NDJSON from stdin, makes one authenticated HTTP request per line, outputs NDJSON results.
+Same as `stream` but automatically injects the auth header for each request. Reads NDJSON from stdin, makes one authenticated HTTP request per line, outputs NDJSON results. `--provider` accepts either an `oauth login` provider or an `auth add` name.
+
+Lines rejected with a 401 are retried once with a renewed token. Renewal is shared across the concurrent requests, so a stream whose token expires mid-run fetches one replacement, not one per line.
 
 ```bash
 echo '<ndjson>' | aux4 curl auth-stream --provider <name> [--tokenFile <path>] [--method <METHOD>] [--header <Header: Value>] [--concurrency <n>] <url>
@@ -295,7 +511,7 @@ echo '<ndjson>' | aux4 curl auth-stream --provider <name> [--tokenFile <path>] [
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--provider` | OAuth provider name | required |
+| `--provider` | OAuth provider or auth name | required |
 | `--tokenFile` | Custom token file path | `.oauth/<provider>.json` |
 | `--method` | HTTP method | `POST` |
 | `--header` | Request header (repeatable) | |
@@ -313,9 +529,14 @@ echo '{"title":"Pin 1","board_id":"123"}
 
 ## Token File
 
-By default, tokens are stored in `.oauth/<provider>.json` in the current directory. Override with `--tokenFile` on any command:
+By default, tokens are stored in `.oauth/<name>.json` in the current directory. Override with `--tokenFile` on any command:
 
 ```bash
 aux4 curl oauth login myprovider --tokenFile /custom/path/token.json ...
-aux4 curl auth-request --provider myprovider --tokenFile /custom/path/token.json https://api.example.com/data
+aux4 curl auth add myapi --tokenFile /custom/path/token.json ...
+aux4 curl auth-request --provider myapi --tokenFile /custom/path/token.json https://api.example.com/data
 ```
+
+The file holds the cached token together with whatever is needed to obtain another one — a refresh token for an interactive login, the credential endpoint and client secret for an `auth add` registration. Both are credentials: keep the directory out of version control.
+
+The default path is relative to the current directory, so a token saved in one directory is not visible from another. Set `AUX4_CURL_OAUTH_HOME` to keep a single store per machine.

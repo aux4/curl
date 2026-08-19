@@ -128,3 +128,59 @@ AUX4_CURL_OAUTH_HOME="$HOME/.aux4-curl-tokentest" aux4 curl oauth status envprov
 Provider:      envprov
 Status:        valid
 ```
+
+## with a client secret held by reference
+
+```beforeAll
+mkdir -p .oauth
+cat > .oauth/refprov.json << 'ENDTOKEN'
+{
+  "clientId": "test-client",
+  "clientSecret": "",
+  "authUrl": "http://localhost/auth",
+  "tokenUrl": "http://localhost/token",
+  "scopes": "read",
+  "accessToken": "test-token",
+  "refreshToken": "test-refresh",
+  "expiresAt": "2099-12-31T23:59:59Z",
+  "clientSecretRef": "aux4/Work/Provider/clientSecret"
+}
+ENDTOKEN
+```
+
+```afterAll
+rm -rf .oauth
+```
+
+### should report the interactive grant
+
+```execute
+aux4 curl oauth status refprov
+```
+
+```expect:partial
+Grant:         authorization_code
+```
+
+### should report that it can renew
+
+The client secret is resolved again at refresh time, so the token renews even
+though the secret is not stored with it.
+
+```execute
+aux4 curl oauth status refprov
+```
+
+```expect:partial
+Can renew:     yes
+```
+
+### should not hold the secret itself
+
+```execute
+grep -c '"clientSecret": ""' .oauth/refprov.json || true
+```
+
+```expect
+1
+```

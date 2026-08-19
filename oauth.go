@@ -27,6 +27,16 @@ type OAuthToken struct {
 	AccessToken  string `json:"accessToken"`
 	RefreshToken string `json:"refreshToken"`
 	ExpiresAt    string `json:"expiresAt"`
+	// Grant records how this token was obtained, which is what decides how to
+	// renew it. Empty means the interactive authorization_code flow, so tokens
+	// written by earlier versions keep refreshing exactly as they did.
+	Grant string      `json:"grant,omitempty"`
+	Auth  *AuthConfig `json:"auth,omitempty"`
+	// ClientSecretRef names the client secret instead of holding it. The
+	// interactive flow needs the secret again at refresh time, so storing the
+	// reference rather than the resolved value is what keeps the secret out of
+	// the token file entirely.
+	ClientSecretRef string `json:"clientSecretRef,omitempty"`
 }
 
 // expandHome turns a leading ~ into the user's home directory. Paths are passed
@@ -81,14 +91,41 @@ func saveToken(path string, token *OAuthToken) error {
 }
 
 func (t *OAuthToken) isExpired() bool {
+	// Nothing to present. This is the state `auth add --verify false` leaves
+	// behind: the recipe is stored but no token has been fetched yet, so the
+	// first use has to acquire one.
+	if t.AccessToken == "" {
+		return true
+	}
 	if t.ExpiresAt == "" {
+		// A directly stored API key (set-token) has no deadline and no way to
+		// renew. Only fetched tokens are ever given one.
 		return false
 	}
 	expiresAt, err := time.Parse(time.RFC3339, t.ExpiresAt)
 	if err != nil {
 		return true
 	}
-	return time.Now().After(expiresAt)
+	return time.Now().Add(expirySkew).After(expiresAt)
+}
+
+// reacquire renews an expired token using whichever grant produced it.
+func (t *OAuthToken) reacquire() error {
+	if t.Grant == grantClientCredentials {
+		return refreshClientCredentials(t)
+	}
+	return refreshAccessToken(t)
+}
+
+// authHeaderFor renders the outbound header carrying this token. The template
+// lives with the auth config, which is what lets a non-bearer API
+// (X-API-Key: ${token}) reuse all of the same machinery.
+func authHeaderFor(t *OAuthToken) string {
+	template := defaultAuthHeader
+	if t.Auth != nil {
+		template = t.Auth.authHeaderTemplate()
+	}
+	return applyAuthHeader(template, t.AccessToken)
 }
 
 func refreshAccessToken(token *OAuthToken) error {
@@ -101,8 +138,16 @@ func refreshAccessToken(token *OAuthToken) error {
 		"refresh_token": {token.RefreshToken},
 		"client_id":     {token.ClientID},
 	}
-	if token.ClientSecret != "" {
-		data.Set("client_secret", token.ClientSecret)
+	clientSecret := token.ClientSecret
+	if clientSecret == "" && token.ClientSecretRef != "" {
+		resolved, err := resolveSecretRef(token.ClientSecretRef)
+		if err != nil {
+			return err
+		}
+		clientSecret = resolved
+	}
+	if clientSecret != "" {
+		data.Set("client_secret", clientSecret)
 	}
 
 	resp, err := http.PostForm(token.TokenURL, data)
@@ -136,23 +181,112 @@ func refreshAccessToken(token *OAuthToken) error {
 	return nil
 }
 
-func ensureValidToken(provider string, tokenFile string) (*OAuthToken, string, error) {
+func ensureValidToken(provider string, tokenFile string, definition *AuthConfig) (*OAuthToken, string, error) {
 	path := resolveTokenFile(provider, tokenFile)
 	token, err := loadToken(path)
 	if err != nil {
-		return nil, path, fmt.Errorf("no token found for provider %q. Run oauth login first", provider)
+		if definition == nil {
+			return nil, path, fmt.Errorf("no token found for provider %q. Run oauth login or auth add first", provider)
+		}
+		// Nothing stored yet, but the shared configuration describes how to get
+		// one. This is what lets a fresh checkout authenticate with no setup
+		// step: the definition travels in config, the token is fetched on use.
+		token = tokenFromConfig(definition)
+	} else if definition != nil {
+		// The configuration is the source of truth for *how* to obtain a token,
+		// so a changed endpoint or scope in the shared file takes effect at
+		// once. Only the cached token itself is kept from local state.
+		token.Grant = grantClientCredentials
+		token.Auth = definition
 	}
 
-	if token.isExpired() {
-		if err := refreshAccessToken(token); err != nil {
-			return nil, path, err
+	if !token.isExpired() {
+		return token, path, nil
+	}
+
+	var refreshErr error
+	lockErr := withTokenLock(path, func() error {
+		// Re-read inside the lock: another process may have refreshed while we
+		// were waiting for it, and its token is then the one to use.
+		if current, loadErr := loadToken(path); loadErr == nil {
+			if definition != nil {
+				current.Grant = grantClientCredentials
+				current.Auth = definition
+			}
+			token = current
+			if !token.isExpired() {
+				return nil
+			}
+		}
+
+		if err := token.reacquire(); err != nil {
+			refreshErr = err
+			return nil
 		}
 		if err := saveToken(path, token); err != nil {
-			return nil, path, fmt.Errorf("error saving refreshed token: %v", err)
+			refreshErr = fmt.Errorf("error saving refreshed token: %v", err)
 		}
+		return nil
+	})
+	if lockErr != nil {
+		return nil, path, lockErr
+	}
+	if refreshErr != nil {
+		return nil, path, refreshErr
 	}
 
 	return token, path, nil
+}
+
+// reacquireToken forces a new token regardless of the cached deadline. It backs
+// the 401 retry: the skew handles clock drift, but a token revoked or
+// invalidated server-side is only ever detectable from the API's own answer.
+//
+// usedToken is the token that just failed. If the stored token has since moved
+// on, another request already renewed it and that one is returned instead --
+// which is what stops a batch of concurrent 401s from stampeding the endpoint.
+func reacquireToken(provider string, tokenFile string, usedToken string, definition *AuthConfig) (*OAuthToken, error) {
+	path := resolveTokenFile(provider, tokenFile)
+
+	var result *OAuthToken
+	var opErr error
+
+	lockErr := withTokenLock(path, func() error {
+		token, err := loadToken(path)
+		if err != nil {
+			if definition == nil {
+				opErr = fmt.Errorf("no token found for provider %q", provider)
+				return nil
+			}
+			token = tokenFromConfig(definition)
+		} else if definition != nil {
+			token.Grant = grantClientCredentials
+			token.Auth = definition
+		}
+
+		if token.AccessToken != usedToken && !token.isExpired() {
+			result = token
+			return nil
+		}
+
+		if err := token.reacquire(); err != nil {
+			opErr = err
+			return nil
+		}
+		if err := saveToken(path, token); err != nil {
+			opErr = fmt.Errorf("error saving refreshed token: %v", err)
+			return nil
+		}
+		result = token
+		return nil
+	})
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	if opErr != nil {
+		return nil, opErr
+	}
+	return result, nil
 }
 
 func generateCodeVerifier() (string, error) {
@@ -168,10 +302,10 @@ func generateCodeChallenge(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(h[:])
 }
 
-// args: provider clientId clientSecret authUrl tokenUrl scopes callbackPort tokenFile
+// args: provider clientId clientSecret authUrl tokenUrl scopes callbackPort tokenFile clientSecretRef
 func runOAuthLogin(args []string) {
 	if len(args) < 6 {
-		fmt.Fprintf(os.Stderr, "Error: provider, clientId, clientSecret, authUrl, tokenUrl, and scopes are required\n")
+		fmt.Fprintf(os.Stderr, "Error: provider, clientId, authUrl, tokenUrl, and scopes are required\n")
 		os.Exit(1)
 	}
 
@@ -190,6 +324,24 @@ func runOAuthLogin(args []string) {
 	tokenFile := ""
 	if len(args) > 7 && args[7] != "" {
 		tokenFile = args[7]
+	}
+
+	// The interactive flow gets the same treatment as client credentials: the
+	// secret may be named instead of inlined, so an oauth definition can live
+	// in a shared config file too.
+	clientSecretRef := ""
+	if clientSecret == "" && len(args) > 8 && strings.TrimSpace(args[8]) != "" {
+		clientSecretRef = strings.TrimSpace(args[8])
+		if err := validateSecretRef(clientSecretRef); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		resolved, err := resolveSecretRef(clientSecretRef)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		clientSecret = resolved
 	}
 
 	path := resolveTokenFile(provider, tokenFile)
@@ -276,10 +428,10 @@ func runOAuthLogin(args []string) {
 
 	// Exchange code for tokens
 	data := url.Values{
-		"grant_type":   {"authorization_code"},
-		"code":         {code},
-		"redirect_uri": {redirectURI},
-		"client_id":    {clientID},
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"client_id":     {clientID},
 		"code_verifier": {codeVerifier},
 	}
 	if clientSecret != "" {
@@ -320,6 +472,14 @@ func runOAuthLogin(args []string) {
 		Scopes:       scopes,
 	}
 
+	// When the secret came from a reference, keep the reference and drop the
+	// value. Refresh resolves it again, so nothing is lost and the token file
+	// never holds the secret.
+	if clientSecretRef != "" {
+		token.ClientSecret = ""
+		token.ClientSecretRef = clientSecretRef
+	}
+
 	if at, ok := result["access_token"].(string); ok {
 		token.AccessToken = at
 	}
@@ -338,7 +498,18 @@ func runOAuthLogin(args []string) {
 	fmt.Fprintf(os.Stderr, "Login successful! Token saved to %s\n", path)
 }
 
-// args: provider tokenFile
+// configuredAuth reads the auth definitions that came from config.yaml and
+// picks the one matching this provider. aux4 delivers an object-valued
+// parameter as a JSON string, so nothing has to be parsed but JSON. A missing
+// or empty value simply means "not configured", and the stored token is used.
+func configuredAuth(args []string, index int, provider string) (*AuthConfig, error) {
+	if len(args) <= index {
+		return nil, nil
+	}
+	return authFromConfig(args[index], provider)
+}
+
+// args: provider tokenFile auth
 func runOAuthToken(args []string) {
 	if len(args) < 1 || args[0] == "" {
 		fmt.Fprintf(os.Stderr, "Error: provider is required\n")
@@ -351,7 +522,13 @@ func runOAuthToken(args []string) {
 		tokenFile = args[1]
 	}
 
-	token, _, err := ensureValidToken(provider, tokenFile)
+	definition, err := configuredAuth(args, 2, provider)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	token, _, err := ensureValidToken(provider, tokenFile, definition)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -395,11 +572,38 @@ func runOAuthStatus(args []string) {
 		scopes = "(none)"
 	}
 
+	grant := token.Grant
+	if grant == "" {
+		grant = "authorization_code"
+	}
+
+	// "Refresh token: no" alone would be misleading for a client-credentials
+	// token: it has no refresh token and never needs one, because it renews by
+	// replaying the credential exchange.
+	canRenew := "no"
+	if token.Grant == grantClientCredentials {
+		if token.Auth != nil && token.Auth.TokenURL != "" {
+			canRenew = "yes"
+		}
+	} else if token.RefreshToken != "" {
+		canRenew = "yes"
+	}
+
+	preset := ""
+	if token.Auth != nil && token.Auth.Preset != "" {
+		preset = token.Auth.Preset
+	}
+
 	fmt.Fprintf(os.Stdout, "Provider:      %s\n", provider)
 	fmt.Fprintf(os.Stdout, "Status:        %s\n", status)
 	fmt.Fprintf(os.Stdout, "Scopes:        %s\n", scopes)
+	fmt.Fprintf(os.Stdout, "Grant:         %s\n", grant)
+	if preset != "" {
+		fmt.Fprintf(os.Stdout, "Preset:        %s\n", preset)
+	}
 	fmt.Fprintf(os.Stdout, "Expires at:    %s\n", token.ExpiresAt)
 	fmt.Fprintf(os.Stdout, "Refresh token: %s\n", hasRefresh)
+	fmt.Fprintf(os.Stdout, "Can renew:     %s\n", canRenew)
 	fmt.Fprintf(os.Stdout, "Token file:    %s\n", path)
 }
 
@@ -476,7 +680,15 @@ func runAuthRequest(args []string) {
 	provider := args[0]
 	tokenFile := args[1]
 
-	token, _, err := ensureValidToken(provider, tokenFile)
+	// The configured definition, when present, arrives after the request
+	// arguments so the existing positions are untouched.
+	definition, err := configuredAuth(args, 11, provider)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	token, _, err := ensureValidToken(provider, tokenFile, definition)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -491,8 +703,22 @@ func runAuthRequest(args []string) {
 	if len(requestArgs) > 2 {
 		headerList = parseMultiValue(requestArgs[2])
 	}
-	headerList = append(headerList, "Authorization: Bearer "+token.AccessToken)
+	baseHeaders := append([]string{}, headerList...)
+	headerList = append(headerList, authHeaderFor(token))
 	existingHeaders := strings.Join(headerList, "\n")
+
+	// One retry with a fresh token if the API rejects this one. The skew covers
+	// clock drift; a token revoked or invalidated server-side is only ever
+	// visible from the API's own answer.
+	usedToken := token.AccessToken
+	reauth := func() ([]string, error) {
+		refreshed, err := reacquireToken(provider, tokenFile, usedToken, definition)
+		if err != nil {
+			return nil, err
+		}
+		usedToken = refreshed.AccessToken
+		return append(append([]string{}, baseHeaders...), authHeaderFor(refreshed)), nil
+	}
 
 	// Rebuild args for runRequest: method url header body showHeaders upload uploadField output bodyFile
 	newArgs := make([]string, 9)
@@ -518,7 +744,7 @@ func runAuthRequest(args []string) {
 		newArgs[8] = requestArgs[8] // bodyFile
 	}
 
-	runRequest(newArgs)
+	runRequestWithAuth(newArgs, reauth)
 }
 
 // args: provider tokenFile method url header concurrency
@@ -531,7 +757,13 @@ func runAuthStream(args []string) {
 	provider := args[0]
 	tokenFile := args[1]
 
-	token, _, err := ensureValidToken(provider, tokenFile)
+	definition, err := configuredAuth(args, 6, provider)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	token, _, err := ensureValidToken(provider, tokenFile, definition)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -546,7 +778,13 @@ func runAuthStream(args []string) {
 	if len(requestArgs) > 2 {
 		headerList = parseMultiValue(requestArgs[2])
 	}
-	headerList = append(headerList, "Authorization: Bearer "+token.AccessToken)
+	auth := &streamAuth{
+		provider:   provider,
+		tokenFile:  tokenFile,
+		definition: definition,
+		header:     authHeaderFor(token),
+		token:      token.AccessToken,
+	}
 	existingHeaders := strings.Join(headerList, "\n")
 
 	newArgs := make([]string, 4)
@@ -557,5 +795,5 @@ func runAuthStream(args []string) {
 		newArgs[3] = requestArgs[3] // concurrency
 	}
 
-	runStream(newArgs)
+	runStreamWithAuth(newArgs, auth)
 }

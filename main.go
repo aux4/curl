@@ -26,6 +26,8 @@ func main() {
 		runOAuthStatus(os.Args[2:])
 	case "oauth-logout":
 		runOAuthLogout(os.Args[2:])
+	case "auth-add":
+		runAuthAdd(os.Args[2:])
 	case "oauth-set-token":
 		runOAuthSetToken(os.Args[2:])
 	case "auth-request":
@@ -34,7 +36,7 @@ func main() {
 		runAuthStream(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", command)
-		fmt.Fprintf(os.Stderr, "Available commands: request, stream, oauth-login, oauth-token, oauth-status, oauth-logout, auth-request, auth-stream\n")
+		fmt.Fprintf(os.Stderr, "Available commands: request, stream, oauth-login, oauth-token, oauth-status, oauth-logout, oauth-set-token, auth-add, auth-request, auth-stream\n")
 		os.Exit(1)
 	}
 }

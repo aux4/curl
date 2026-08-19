@@ -13,8 +13,51 @@ import (
 	"time"
 )
 
+// streamAuth carries token renewal across the goroutines of a stream. The
+// mutex plus the header comparison is what turns a burst of concurrent 401s
+// into a single token fetch rather than one per in-flight line.
+type streamAuth struct {
+	provider   string
+	tokenFile  string
+	definition *AuthConfig
+	mu         sync.Mutex
+	header     string
+	token      string
+}
+
+func (a *streamAuth) current() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.header
+}
+
+// renew replaces the token behind usedHeader. If another goroutine already
+// replaced it, that result is reused instead of fetching a second time.
+func (a *streamAuth) renew(usedHeader string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.header != usedHeader {
+		return true
+	}
+
+	refreshed, err := reacquireToken(a.provider, a.tokenFile, a.token, a.definition)
+	if err != nil {
+		return false
+	}
+	a.token = refreshed.AccessToken
+	a.header = authHeaderFor(refreshed)
+	return true
+}
+
 // args: method url header concurrency maxTime
 func runStream(args []string) {
+	runStreamWithAuth(args, nil)
+}
+
+// runStreamWithAuth is runStream with an optional per-line token retry. A nil
+// auth disables it for unauthenticated streams.
+func runStreamWithAuth(args []string, auth *streamAuth) {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Error: URL is required\n")
 		os.Exit(1)
@@ -86,49 +129,77 @@ func runStream(args []string) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			req, err := http.NewRequest(method, url, strings.NewReader(body))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
-				return
-			}
+			var status int
+			var respBody []byte
 
-			req.Header.Set("Content-Type", "application/json")
-			for _, h := range headers {
-				h = strings.TrimSpace(h)
-				if h == "" {
-					continue
+			for attempt := 0; ; attempt++ {
+				req, err := http.NewRequest(method, url, strings.NewReader(body))
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
+					return
 				}
-				parts := strings.SplitN(h, ":", 2)
-				if len(parts) == 2 {
-					req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+
+				req.Header.Set("Content-Type", "application/json")
+				for _, h := range headers {
+					h = strings.TrimSpace(h)
+					if h == "" {
+						continue
+					}
+					parts := strings.SplitN(h, ":", 2)
+					if len(parts) == 2 {
+						req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+					}
 				}
-			}
 
-			resp, err := client.Do(req)
-			if err != nil {
-				errJSON, _ := json.Marshal(map[string]interface{}{
-					"error":  err.Error(),
-					"input":  json.RawMessage(body),
-					"status": 0,
-				})
-				mu.Lock()
-				fmt.Fprintln(os.Stdout, string(errJSON))
-				mu.Unlock()
-				return
-			}
-			defer resp.Body.Close()
+				// Read the auth header per attempt: another line may have
+				// already renewed it while this request was in flight.
+				authHeader := ""
+				if auth != nil {
+					authHeader = auth.current()
+					parts := strings.SplitN(authHeader, ":", 2)
+					if len(parts) == 2 {
+						req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+					}
+				}
 
-			respBody, err := io.ReadAll(resp.Body)
-			if err != nil {
-				errJSON, _ := json.Marshal(map[string]interface{}{
-					"error":  err.Error(),
-					"input":  json.RawMessage(body),
-					"status": resp.StatusCode,
-				})
-				mu.Lock()
-				fmt.Fprintln(os.Stdout, string(errJSON))
-				mu.Unlock()
-				return
+				resp, err := client.Do(req)
+				if err != nil {
+					errJSON, _ := json.Marshal(map[string]interface{}{
+						"error":  err.Error(),
+						"input":  json.RawMessage(body),
+						"status": 0,
+					})
+					mu.Lock()
+					fmt.Fprintln(os.Stdout, string(errJSON))
+					mu.Unlock()
+					return
+				}
+
+				data, readErr := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if readErr != nil {
+					errJSON, _ := json.Marshal(map[string]interface{}{
+						"error":  readErr.Error(),
+						"input":  json.RawMessage(body),
+						"status": resp.StatusCode,
+					})
+					mu.Lock()
+					fmt.Fprintln(os.Stdout, string(errJSON))
+					mu.Unlock()
+					return
+				}
+
+				// One retry on a rejected token. If renewal fails, the 401 is
+				// reported as the line's result like any other status.
+				if resp.StatusCode == http.StatusUnauthorized && auth != nil && attempt == 0 {
+					if auth.renew(authHeader) {
+						continue
+					}
+				}
+
+				status = resp.StatusCode
+				respBody = data
+				break
 			}
 
 			// Try to parse response as JSON
@@ -138,7 +209,7 @@ func runStream(args []string) {
 				result, _ := json.Marshal(map[string]interface{}{
 					"body":   string(respBody),
 					"input":  json.RawMessage(body),
-					"status": resp.StatusCode,
+					"status": status,
 				})
 				mu.Lock()
 				fmt.Fprintln(os.Stdout, string(result))
@@ -150,7 +221,7 @@ func runStream(args []string) {
 			result, _ := json.Marshal(map[string]interface{}{
 				"body":   respJSON,
 				"input":  json.RawMessage(body),
-				"status": resp.StatusCode,
+				"status": status,
 			})
 			mu.Lock()
 			fmt.Fprintln(os.Stdout, string(result))

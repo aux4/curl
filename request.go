@@ -276,6 +276,13 @@ func buildRelatedBody(uploads []string, metadata string) (io.Reader, string, err
 
 // args: method url header body showHeaders upload uploadField output bodyFile status maxTime
 func runRequest(args []string) {
+	runRequestWithAuth(args, nil)
+}
+
+// runRequestWithAuth is runRequest with an optional token retry. reauth is
+// called once, on a 401, and returns the header list to replay the request
+// with; nil disables the retry entirely for unauthenticated calls.
+func runRequestWithAuth(args []string, reauth func() ([]string, error)) {
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Error: URL is required\n")
 		os.Exit(1)
@@ -341,97 +348,143 @@ func runRequest(args []string) {
 		}
 	}
 
-	var reqBody io.Reader
-	multipartBoundary := ""
+	// A file upload or a raw file body is never a GET.
+	if (bodyFile != "" || len(uploads) > 0) && method == "GET" {
+		method = "POST"
+	}
 
-	bodyFileSize := int64(-1)
+	// stdin can only be drained once, so it is held for a possible replay.
+	var stdinBody []byte
+	stdinLoaded := false
 
-	if bodyFile != "" {
-		// A raw file as the whole request body (as opposed to --upload, which
-		// wraps it in a multipart form).
-		file, err := os.Open(bodyFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error opening body file: %v\n", err)
-			os.Exit(1)
+	// The body is rebuilt per attempt rather than built once: a reader is
+	// consumed by the first send, and a 401 retry has to send it again.
+	buildBody := func() (io.Reader, int64, string, io.Closer, error) {
+		if bodyFile != "" {
+			// A raw file as the whole request body (as opposed to --upload,
+			// which wraps it in a multipart form).
+			file, err := os.Open(bodyFile)
+			if err != nil {
+				return nil, -1, "", nil, fmt.Errorf("error opening body file: %v", err)
+			}
+			// Without an explicit length Go streams an *os.File with chunked
+			// transfer-encoding, which many APIs reject for uploads.
+			size := int64(-1)
+			if info, err := file.Stat(); err == nil {
+				size = info.Size()
+			}
+			return file, size, "", file, nil
 		}
-		defer file.Close()
 
-		// Without an explicit length Go streams an *os.File with chunked
-		// transfer-encoding, which many APIs reject for uploads.
-		if info, err := file.Stat(); err == nil {
-			bodyFileSize = info.Size()
+		if len(uploads) > 0 {
+			var reader io.Reader
+			var boundary string
+			var err error
+			if isMultipartRelated(headers) {
+				// Drive/Gmail style: JSON metadata part + media part(s).
+				reader, boundary, err = buildRelatedBody(uploads, body)
+			} else {
+				reader, boundary, err = buildMultipartBody(uploads, uploadField, body)
+			}
+			if err != nil {
+				return nil, -1, "", nil, err
+			}
+			return reader, -1, boundary, nil, nil
 		}
 
-		if method == "GET" {
-			method = "POST"
+		if body != "" {
+			return strings.NewReader(body), -1, "", nil, nil
 		}
-		reqBody = file
-	} else if len(uploads) > 0 {
-		// A file upload is never a GET; default to POST unless told otherwise.
-		if method == "GET" {
-			method = "POST"
-		}
-		var err error
-		if isMultipartRelated(headers) {
-			// Drive/Gmail style: JSON metadata part + media part(s).
-			reqBody, multipartBoundary, err = buildRelatedBody(uploads, body)
-		} else {
-			reqBody, multipartBoundary, err = buildMultipartBody(uploads, uploadField, body)
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-	} else if body != "" {
-		reqBody = strings.NewReader(body)
-	} else {
-		stat, _ := os.Stdin.Stat()
-		if (stat.Mode() & os.ModeCharDevice) == 0 {
-			data, err := io.ReadAll(os.Stdin)
-			if err == nil && len(data) > 0 {
-				reqBody = bytes.NewReader(data)
+
+		if !stdinLoaded {
+			stdinLoaded = true
+			stat, _ := os.Stdin.Stat()
+			if (stat.Mode() & os.ModeCharDevice) == 0 {
+				if data, err := io.ReadAll(os.Stdin); err == nil {
+					stdinBody = data
+				}
 			}
 		}
-	}
-
-	req, err := http.NewRequest(method, url, reqBody)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
-		os.Exit(1)
-	}
-
-	if bodyFileSize >= 0 {
-		req.ContentLength = bodyFileSize
-	}
-
-	for _, h := range headers {
-		h = strings.TrimSpace(h)
-		if h == "" {
-			continue
+		if len(stdinBody) > 0 {
+			return bytes.NewReader(stdinBody), -1, "", nil, nil
 		}
-		parts := strings.SplitN(h, ":", 2)
-		if len(parts) == 2 {
-			req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
-		}
-	}
 
-	// The boundary is generated here, so the Content-Type has to be rebuilt --
-	// but the caller may still choose the multipart subtype.
-	if multipartBoundary != "" {
-		req.Header.Set("Content-Type", multipartContentTypeFor(headers, multipartBoundary))
+		return nil, -1, "", nil, nil
 	}
 
 	client := &http.Client{}
 	if maxTime > 0 {
 		client.Timeout = time.Duration(maxTime * float64(time.Second))
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		// Transport failure (DNS/refused/TLS/timeout). With --status, keep stdout
-		// empty and exit non-zero so callers can distinguish "unreachable" from a
-		// real HTTP status code.
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		reqBody, bodyFileSize, multipartBoundary, closer, err := buildBody()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		req, err := http.NewRequest(method, url, reqBody)
+		if err != nil {
+			if closer != nil {
+				closer.Close()
+			}
+			fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
+			os.Exit(1)
+		}
+
+		if bodyFileSize >= 0 {
+			req.ContentLength = bodyFileSize
+		}
+
+		for _, h := range headers {
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			parts := strings.SplitN(h, ":", 2)
+			if len(parts) == 2 {
+				req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+			}
+		}
+
+		// The boundary is generated here, so the Content-Type has to be rebuilt
+		// -- but the caller may still choose the multipart subtype.
+		if multipartBoundary != "" {
+			req.Header.Set("Content-Type", multipartContentTypeFor(headers, multipartBoundary))
+		}
+
+		resp, err = client.Do(req)
+		if closer != nil {
+			closer.Close()
+		}
+		if err != nil {
+			// Transport failure (DNS/refused/TLS/timeout). With --status, keep
+			// stdout empty and exit non-zero so callers can distinguish
+			// "unreachable" from a real HTTP status code.
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		// The status line arrives before any response body has been written
+		// out, so a rejected token can still be replaced and the whole request
+		// replayed without the caller ever seeing the failed attempt.
+		if resp.StatusCode == http.StatusUnauthorized && reauth != nil && attempt == 0 {
+			refreshed, err := reauth()
+			if err != nil {
+				// Renewal failed, but a 401 is not always about an expired
+				// token. Report why the retry did not happen and let the API's
+				// own response through instead of replacing it with our error.
+				fmt.Fprintf(os.Stderr, "Warning: could not renew the token: %v\n", err)
+				break
+			}
+			resp.Body.Close()
+			headers = refreshed
+			continue
+		}
+
+		break
 	}
 	defer resp.Body.Close()
 

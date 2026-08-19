@@ -16,6 +16,12 @@ Some providers require extra parameters on the authorization request. Include th
 --authUrl "https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent"
 ```
 
+**Keeping the client secret out of the token file**
+
+`--clientSecretRef` names the client secret instead of taking it on the command line, in the form `<provider>/<vault>/<item>/<field>`. It is resolved through `aux4/secret` for the initial exchange, and the **reference** rather than the secret is written to the token file. Refresh resolves it again, so the secret is never stored at rest and never appears in shell history or in `ps`.
+
+It is deliberately not written as a `secret://` URI: aux4 resolves a parameter whose whole value is one before the command runs, so a URI would arrive here already resolved and be stored as though it were a reference.
+
 #### Usage
 
 ```bash
@@ -48,4 +54,15 @@ https://www.pinterest.com/oauth/?client_id=abc123&redirect_uri=http://localhost:
 
 Waiting for callback on port 9876...
 Login successful! Token saved to .oauth/pinterest.json
+```
+
+Taking the client secret from a secret provider instead of the command line:
+
+```bash
+aux4 curl oauth login pinterest \
+  --clientId abc123 \
+  --clientSecretRef 'aux4/Work/Pinterest/clientSecret' \
+  --authUrl https://www.pinterest.com/oauth/ \
+  --tokenUrl https://api.pinterest.com/v5/oauth/token \
+  --scopes boards:read,pins:read
 ```

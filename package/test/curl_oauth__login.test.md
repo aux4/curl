@@ -79,3 +79,35 @@ rm -f /tmp/aux4-authurl.txt /tmp/aux4-authurl-token.json
 ```expect
 auth?access_type=offline&prompt=consent&client_id=CID
 ```
+
+## with a client secret held by reference
+
+```afterAll
+rm -rf .oauth
+```
+
+### should reject an unresolvable reference before opening the browser
+
+The reference is resolved for the initial exchange, so a bad one fails
+immediately rather than after the user has authorised in a browser.
+
+```execute
+aux4 curl oauth login refprov --clientId id1 --clientSecretRef 'nosuchprovider/Vault/Item/field' --authUrl http://127.0.0.1:1/auth --tokenUrl http://127.0.0.1:1/token --scopes read
+```
+
+```error:partial
+no secret provider "nosuchprovider" is installed
+```
+
+### should reject a reference passed as a secret:// uri
+
+aux4 resolves a parameter whose whole value is such a URI before the command
+runs, so what would arrive is the secret itself rather than a reference.
+
+```execute
+aux4 curl oauth login refprov --clientId id1 --clientSecretRef 'a-resolved-secret' --authUrl http://127.0.0.1:1/auth --tokenUrl http://127.0.0.1:1/token --scopes read
+```
+
+```error:partial
+the secret reference must be <provider>/<vault>/<item>/<field>
+```

@@ -145,9 +145,18 @@
           }
         },
         {
+          "name": "auth",
+          "execute": [
+            "profile:curl:auth"
+          ],
+          "help": {
+            "text": "Machine-to-machine authentication with a credential endpoint"
+          }
+        },
+        {
           "name": "auth-request",
           "execute": [
-            "${packageDir}/aux4-curl auth-request values(provider, tokenFile, method, url, header*, body, showHeaders, upload*, uploadField, output, bodyFile)"
+            "${packageDir}/aux4-curl auth-request values(provider, tokenFile, method, url, header*, body, showHeaders, upload*, uploadField, output, bodyFile, auth)"
           ],
           "help": {
             "text": "Make an authenticated HTTP request using OAuth2 token",
@@ -207,6 +216,21 @@
                 "name": "bodyFile",
                 "text": "Send the contents of this file as the raw request body",
                 "default": ""
+              },
+              {
+                "name": "auth",
+                "text": "Auth definitions from config.yaml, keyed by name",
+                "default": ""
+              },
+              {
+                "name": "configFile",
+                "text": "Config file holding the auth definitions",
+                "default": ""
+              },
+              {
+                "name": "config",
+                "text": "Config profile to read the auth definitions from",
+                "default": ""
               }
             ]
           }
@@ -214,7 +238,7 @@
         {
           "name": "auth-stream",
           "execute": [
-            "stdin:${packageDir}/aux4-curl auth-stream values(provider, tokenFile, method, url, header*, concurrency)"
+            "stdin:${packageDir}/aux4-curl auth-stream values(provider, tokenFile, method, url, header*, concurrency, auth)"
           ],
           "help": {
             "text": "Stream NDJSON with OAuth2 authentication",
@@ -248,6 +272,21 @@
                 "name": "concurrency",
                 "text": "Number of concurrent requests",
                 "default": "1"
+              },
+              {
+                "name": "auth",
+                "text": "Auth definitions from config.yaml, keyed by name",
+                "default": ""
+              },
+              {
+                "name": "configFile",
+                "text": "Config file holding the auth definitions",
+                "default": ""
+              },
+              {
+                "name": "config",
+                "text": "Config profile to read the auth definitions from",
+                "default": ""
               }
             ]
           }
@@ -260,7 +299,7 @@
         {
           "name": "login",
           "execute": [
-            "${packageDir}/aux4-curl oauth-login values(provider, clientId, clientSecret, authUrl, tokenUrl, scopes, callbackPort, tokenFile)"
+            "${packageDir}/aux4-curl oauth-login values(provider, clientId, clientSecret, authUrl, tokenUrl, scopes, callbackPort, tokenFile, clientSecretRef)"
           ],
           "help": {
             "text": "Authenticate with an OAuth2 provider",
@@ -276,7 +315,8 @@
               },
               {
                 "name": "clientSecret",
-                "text": "OAuth client secret"
+                "text": "OAuth client secret",
+                "default": ""
               },
               {
                 "name": "authUrl",
@@ -299,6 +339,11 @@
                 "name": "tokenFile",
                 "text": "Custom token file path (default: .oauth/<provider>.json)",
                 "default": ""
+              },
+              {
+                "name": "clientSecretRef",
+                "text": "Secret reference holding the client secret (<provider>/<vault>/<item>/<field>)",
+                "default": ""
               }
             ]
           }
@@ -306,7 +351,7 @@
         {
           "name": "token",
           "execute": [
-            "${packageDir}/aux4-curl oauth-token values(provider, tokenFile)"
+            "${packageDir}/aux4-curl oauth-token values(provider, tokenFile, auth)"
           ],
           "help": {
             "text": "Get a valid access token, auto-refreshing if expired",
@@ -319,6 +364,21 @@
               {
                 "name": "tokenFile",
                 "text": "Custom token file path (default: .oauth/<provider>.json)",
+                "default": ""
+              },
+              {
+                "name": "auth",
+                "text": "Auth definitions from config.yaml, keyed by name",
+                "default": ""
+              },
+              {
+                "name": "configFile",
+                "text": "Config file holding the auth definitions",
+                "default": ""
+              },
+              {
+                "name": "config",
+                "text": "Config profile to read the auth definitions from",
                 "default": ""
               }
             ]
@@ -392,6 +452,236 @@
           }
         }
       ]
+    },
+    {
+      "name": "curl:auth",
+      "commands": [
+        {
+          "name": "add",
+          "execute": [
+            "${packageDir}/aux4-curl auth-add values(name, tokenUrl, preset, clientId, clientSecret, scopes, audience, method, contentType, credentialsIn, header*, body, tokenPath, expiresPath, expiresIn, authHeader, clientSecretRef, verify, tokenFile, configFile, config, save)"
+          ],
+          "help": {
+            "text": "Register a named credential endpoint that issues tokens on demand",
+            "variables": [
+              {
+                "name": "name",
+                "text": "Name used to reference this auth in auth-request and auth-stream",
+                "arg": true
+              },
+              {
+                "name": "tokenUrl",
+                "text": "URL of the endpoint that issues the token"
+              },
+              {
+                "name": "preset",
+                "text": "Defaults for how the token is requested and read back",
+                "default": "client-credentials",
+                "options": [
+                  "client-credentials",
+                  "client-credentials-basic",
+                  "jwt",
+                  "json"
+                ]
+              },
+              {
+                "name": "clientId",
+                "text": "Client ID sent to the token endpoint",
+                "default": ""
+              },
+              {
+                "name": "clientSecret",
+                "text": "Client secret sent to the token endpoint",
+                "default": "",
+                "hide": true
+              },
+              {
+                "name": "scopes",
+                "text": "Space-separated scopes to request",
+                "default": ""
+              },
+              {
+                "name": "audience",
+                "text": "Audience to request, for providers that require one",
+                "default": ""
+              },
+              {
+                "name": "method",
+                "text": "HTTP method for the token request",
+                "default": "POST"
+              },
+              {
+                "name": "contentType",
+                "text": "How credentials are encoded in the body",
+                "default": "",
+                "options": [
+                  "form",
+                  "json"
+                ]
+              },
+              {
+                "name": "credentialsIn",
+                "text": "Send credentials in the body or as HTTP Basic",
+                "default": "",
+                "options": [
+                  "body",
+                  "header"
+                ]
+              },
+              {
+                "name": "header",
+                "text": "Extra header on the token request (Name: Value)",
+                "default": "",
+                "multiple": true
+              },
+              {
+                "name": "body",
+                "text": "Verbatim token request body, replacing the generated one",
+                "default": ""
+              },
+              {
+                "name": "tokenPath",
+                "text": "JSON path to the token in the response (e.g. $.data.access_token)",
+                "default": ""
+              },
+              {
+                "name": "expiresPath",
+                "text": "JSON path to the expiry in the response",
+                "default": ""
+              },
+              {
+                "name": "expiresIn",
+                "text": "Fallback lifetime in seconds when the response and token say nothing",
+                "default": ""
+              },
+              {
+                "name": "authHeader",
+                "text": "Header template for API calls",
+                "default": "Authorization: Bearer ${token}"
+              },
+              {
+                "name": "verify",
+                "text": "Fetch a token immediately to check the configuration works",
+                "default": "true",
+                "options": [
+                  "true",
+                  "false"
+                ]
+              },
+              {
+                "name": "tokenFile",
+                "text": "Custom token file path (default: .oauth/<name>.json)",
+                "default": ""
+              },
+              {
+                "name": "clientSecretRef",
+                "text": "Secret reference holding the client secret (<provider>/<vault>/<item>/<field>)",
+                "default": ""
+              },
+              {
+                "name": "save",
+                "text": "Write the definition to the config file instead of the local token store",
+                "default": "false",
+                "options": [
+                  "true",
+                  "false"
+                ]
+              },
+              {
+                "name": "configFile",
+                "text": "Config file holding the auth definitions",
+                "default": ""
+              },
+              {
+                "name": "config",
+                "text": "Config profile to write the definition under",
+                "default": ""
+              }
+            ]
+          }
+        },
+        {
+          "name": "token",
+          "execute": [
+            "${packageDir}/aux4-curl oauth-token values(name, tokenFile, auth)"
+          ],
+          "help": {
+            "text": "Get a valid token, fetching a new one if the stored one expired",
+            "variables": [
+              {
+                "name": "name",
+                "text": "Auth name",
+                "arg": true
+              },
+              {
+                "name": "tokenFile",
+                "text": "Custom token file path (default: .oauth/<name>.json)",
+                "default": ""
+              },
+              {
+                "name": "auth",
+                "text": "Auth definitions from config.yaml, keyed by name",
+                "default": ""
+              },
+              {
+                "name": "configFile",
+                "text": "Config file holding the auth definitions",
+                "default": ""
+              },
+              {
+                "name": "config",
+                "text": "Config profile to read the auth definitions from",
+                "default": ""
+              }
+            ]
+          }
+        },
+        {
+          "name": "status",
+          "execute": [
+            "${packageDir}/aux4-curl oauth-status values(name, tokenFile)"
+          ],
+          "help": {
+            "text": "Show the stored configuration and token state for an auth",
+            "variables": [
+              {
+                "name": "name",
+                "text": "Auth name",
+                "arg": true
+              },
+              {
+                "name": "tokenFile",
+                "text": "Custom token file path (default: .oauth/<name>.json)",
+                "default": ""
+              }
+            ]
+          }
+        },
+        {
+          "name": "remove",
+          "execute": [
+            "${packageDir}/aux4-curl oauth-logout values(name, tokenFile)"
+          ],
+          "help": {
+            "text": "Remove a stored auth configuration and its cached token",
+            "variables": [
+              {
+                "name": "name",
+                "text": "Auth name",
+                "arg": true
+              },
+              {
+                "name": "tokenFile",
+                "text": "Custom token file path (default: .oauth/<name>.json)",
+                "default": ""
+              }
+            ]
+          }
+        }
+      ]
     }
+  ],
+  "dependencies": [
+    "aux4/config"
   ]
 }
