@@ -7,6 +7,11 @@
 ```
 
 ```beforeAll
+# A fresh CI runner has only this package and its declared dependencies, so the
+# tools these tests drive are installed here. Doing it in the test rather than
+# in the workflow keeps the suite self-contained and identical locally.
+aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/json" || aux4 aux4 pkger install aux4/json > /dev/null 2>&1
+aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/secret-aux4" || aux4 aux4 pkger install aux4/secret-aux4 > /dev/null 2>&1
 cat > /tmp/aux4-curl-cfg-18955.js << 'ENDJS'
 const http = require('http');
 let issued = 0;
@@ -138,9 +143,10 @@ no secret provider "nosuchprovider" is installed
 ```
 
 ```beforeAll
-# These tests need a secret provider to resolve a reference against. Installing
-# it here rather than in the workflow keeps the test self-contained, so it runs
-# the same way locally and on a fresh CI runner.
+# A fresh CI runner has only this package and its declared dependencies, so the
+# tools these tests drive are installed here. Doing it in the test rather than
+# in the workflow keeps the suite self-contained and identical locally.
+aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/json" || aux4 aux4 pkger install aux4/json > /dev/null 2>&1
 aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/secret-aux4" || aux4 aux4 pkger install aux4/secret-aux4 > /dev/null 2>&1
 aux4 secret aux4 create --vault Aux4CurlTest --item Billing --fields "clientSecret=sec1" > /dev/null 2>&1
 cat > /tmp/aux4-curl-cfgw-18956.js << 'ENDJS'
@@ -241,6 +247,11 @@ use either clientSecret or clientSecretRef, not both
 ```
 
 ```beforeAll
+# A fresh CI runner has only this package and its declared dependencies, so the
+# tools these tests drive are installed here. Doing it in the test rather than
+# in the workflow keeps the suite self-contained and identical locally.
+aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/json" || aux4 aux4 pkger install aux4/json > /dev/null 2>&1
+aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/secret-aux4" || aux4 aux4 pkger install aux4/secret-aux4 > /dev/null 2>&1
 cat > /tmp/aux4-curl-leak-18957.js << 'ENDJS'
 const http = require('http');
 http.createServer((req, res) => {

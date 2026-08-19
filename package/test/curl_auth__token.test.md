@@ -7,6 +7,10 @@
 ```
 
 ```beforeAll
+# A fresh CI runner has only this package and its declared dependencies, so the
+# tools these tests drive are installed here. Doing it in the test rather than
+# in the workflow keeps the suite self-contained and identical locally.
+aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/json" || aux4 aux4 pkger install aux4/json > /dev/null 2>&1
 cat > /tmp/aux4-curl-authtok-18953.js << 'ENDJS'
 const http = require('http');
 let issued = 0;
