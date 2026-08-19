@@ -10,7 +10,6 @@
 # A fresh CI runner has only this package and its declared dependencies, so the
 # tools these tests drive are installed here. Doing it in the test rather than
 # in the workflow keeps the suite self-contained and identical locally.
-aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/json" || aux4 aux4 pkger install aux4/json > /dev/null 2>&1
 cat > /tmp/aux4-curl-srv-18931.js << 'ENDJS'
 const http = require('http');
 http.createServer((req, res) => {
@@ -106,7 +105,6 @@ no token found for provider "nonexistent"
 # A fresh CI runner has only this package and its declared dependencies, so the
 # tools these tests drive are installed here. Doing it in the test rather than
 # in the workflow keeps the suite self-contained and identical locally.
-aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/json" || aux4 aux4 pkger install aux4/json > /dev/null 2>&1
 cat > /tmp/aux4-curl-retry-18954.js << 'ENDJS'
 const http = require('http');
 let issued = 0;
@@ -120,7 +118,7 @@ http.createServer((req, res) => {
       res.end(JSON.stringify(obj));
     };
     if (req.url === '/ping') return json(200, { ok: true });
-    if (req.url === '/issued') return json(200, { issued: issued });
+    if (req.url === '/issued') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end(String(issued)); }
     if (req.url === '/token') {
       issued++;
       accepted = issued;
@@ -175,9 +173,9 @@ aux4 curl auth-request --provider revoked http://127.0.0.1:18954/api
 aux4 curl auth add revoked2 --tokenUrl http://127.0.0.1:18954/token >/dev/null 2>&1
 aux4 curl request http://127.0.0.1:18954/revoke >/dev/null
 aux4 curl auth-request --provider revoked2 http://127.0.0.1:18954/api >/dev/null
-before=$(aux4 curl request http://127.0.0.1:18954/issued | aux4 json get '$.issued')
+before=$(aux4 curl request http://127.0.0.1:18954/issued)
 aux4 curl auth-request --provider revoked2 http://127.0.0.1:18954/api >/dev/null
-after=$(aux4 curl request http://127.0.0.1:18954/issued | aux4 json get '$.issued')
+after=$(aux4 curl request http://127.0.0.1:18954/issued)
 echo "extra fetches: $((after - before))"
 ```
 

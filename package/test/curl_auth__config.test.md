@@ -10,7 +10,6 @@
 # A fresh CI runner has only this package and its declared dependencies, so the
 # tools these tests drive are installed here. Doing it in the test rather than
 # in the workflow keeps the suite self-contained and identical locally.
-aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/json" || aux4 aux4 pkger install aux4/json > /dev/null 2>&1
 aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/secret-aux4" || aux4 aux4 pkger install aux4/secret-aux4 > /dev/null 2>&1
 cat > /tmp/aux4-curl-cfg-18955.js << 'ENDJS'
 const http = require('http');
@@ -25,7 +24,7 @@ http.createServer((req, res) => {
       res.end(JSON.stringify(obj));
     };
     if (req.url === '/ping') return json(200, { ok: true });
-    if (req.url === '/issued') return json(200, { issued: issued });
+    if (req.url === '/issued') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end(String(issued)); }
     if (req.url === '/token') {
       const p = new URLSearchParams(raw);
       if (p.get('client_id') !== 'id1' || p.get('client_secret') !== 'sec1') {
@@ -89,9 +88,9 @@ aux4 curl auth-request --provider billing --configFile config.yaml --config prod
 ```execute
 rm -rf .oauth
 aux4 curl auth-request --provider billing --configFile config.yaml --config prod http://127.0.0.1:18955/api > /dev/null
-before=$(aux4 curl request http://127.0.0.1:18955/issued | aux4 json get '$.issued')
+before=$(aux4 curl request http://127.0.0.1:18955/issued)
 aux4 curl auth-request --provider billing --configFile config.yaml --config prod http://127.0.0.1:18955/api > /dev/null
-after=$(aux4 curl request http://127.0.0.1:18955/issued | aux4 json get '$.issued')
+after=$(aux4 curl request http://127.0.0.1:18955/issued)
 echo "extra fetches: $((after - before))"
 ```
 
@@ -146,7 +145,6 @@ no secret provider "nosuchprovider" is installed
 # A fresh CI runner has only this package and its declared dependencies, so the
 # tools these tests drive are installed here. Doing it in the test rather than
 # in the workflow keeps the suite self-contained and identical locally.
-aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/json" || aux4 aux4 pkger install aux4/json > /dev/null 2>&1
 aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/secret-aux4" || aux4 aux4 pkger install aux4/secret-aux4 > /dev/null 2>&1
 aux4 secret aux4 create --vault Aux4CurlTest --item Billing --fields "clientSecret=sec1" > /dev/null 2>&1
 cat > /tmp/aux4-curl-cfgw-18956.js << 'ENDJS'
@@ -182,12 +180,12 @@ rm -rf .oauth written.yaml
 rm -f written.yaml
 printf 'config:\n  prod:\n    host: api.example.com\n' > written.yaml
 aux4 curl auth add billing --tokenUrl http://127.0.0.1:18956/token --clientId id1 --clientSecretRef 'aux4/Aux4CurlTest/Billing/clientSecret' --configFile written.yaml --config prod --save true --verify false 2>&1
-aux4 config get --file written.yaml prod | aux4 json get '$.auth.billing.tokenUrl'
+aux4 config get --file written.yaml prod | grep -o '"tokenUrl":"[^"]*"' | head -1
 ```
 
 ```expect
 Auth "billing" saved to written.yaml
-"http://127.0.0.1:18956/token"
+"tokenUrl":"http://127.0.0.1:18956/token"
 ```
 
 ### should keep the rest of the config file intact
@@ -196,11 +194,11 @@ Auth "billing" saved to written.yaml
 rm -f written.yaml
 printf 'config:\n  prod:\n    host: api.example.com\n' > written.yaml
 aux4 curl auth add billing --tokenUrl http://127.0.0.1:18956/token --clientId id1 --clientSecretRef 'aux4/Aux4CurlTest/Billing/clientSecret' --configFile written.yaml --config prod --save true --verify false > /dev/null 2>&1
-aux4 config get --file written.yaml prod | aux4 json get '$.host'
+aux4 config get --file written.yaml prod | grep -o '"host":"[^"]*"'
 ```
 
 ```expect
-"api.example.com"
+"host":"api.example.com"
 ```
 
 ### should store the reference and never the secret itself
@@ -209,12 +207,12 @@ aux4 config get --file written.yaml prod | aux4 json get '$.host'
 rm -f written.yaml
 printf 'config:\n  prod:\n    host: api.example.com\n' > written.yaml
 aux4 curl auth add billing --tokenUrl http://127.0.0.1:18956/token --clientId id1 --clientSecretRef 'aux4/Aux4CurlTest/Billing/clientSecret' --configFile written.yaml --config prod --save true --verify false > /dev/null 2>&1
-aux4 config get --file written.yaml prod | aux4 json get '$.auth.billing.clientSecretRef'
+aux4 config get --file written.yaml prod | grep -o '"clientSecretRef":"[^"]*"'
 grep -c "clientSecret:" written.yaml || true
 ```
 
 ```expect
-"aux4/Aux4CurlTest/Billing/clientSecret"
+"clientSecretRef":"aux4/Aux4CurlTest/Billing/clientSecret"
 0
 ```
 
@@ -250,7 +248,6 @@ use either clientSecret or clientSecretRef, not both
 # A fresh CI runner has only this package and its declared dependencies, so the
 # tools these tests drive are installed here. Doing it in the test rather than
 # in the workflow keeps the suite self-contained and identical locally.
-aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/json" || aux4 aux4 pkger install aux4/json > /dev/null 2>&1
 aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/secret-aux4" || aux4 aux4 pkger install aux4/secret-aux4 > /dev/null 2>&1
 cat > /tmp/aux4-curl-leak-18957.js << 'ENDJS'
 const http = require('http');

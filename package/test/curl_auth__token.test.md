@@ -10,7 +10,6 @@
 # A fresh CI runner has only this package and its declared dependencies, so the
 # tools these tests drive are installed here. Doing it in the test rather than
 # in the workflow keeps the suite self-contained and identical locally.
-aux4 aux4 pkger list 2>/dev/null | grep -q "aux4/json" || aux4 aux4 pkger install aux4/json > /dev/null 2>&1
 cat > /tmp/aux4-curl-authtok-18953.js << 'ENDJS'
 const http = require('http');
 let issued = 0;
@@ -24,7 +23,8 @@ http.createServer((req, res) => {
       res.end(JSON.stringify(obj));
     };
     if (req.url === '/ping') return json(200, { ok: true });
-    if (req.url === '/issued') return json(200, { issued: issued, short: issuedShort });
+    if (req.url === '/issued') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end(String(issued)); }
+    if (req.url === '/short-count') { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end(String(issuedShort)); }
     if (req.url === '/token') {
       issued++;
       return json(200, { access_token: 'tok-' + issued, expires_in: 3600 });
@@ -54,13 +54,13 @@ Three reads, one token: the endpoint is called once at registration and not
 again while the cached token is inside its lifetime.
 
 ```execute
-before=$(aux4 curl request http://127.0.0.1:18953/issued | aux4 json get '$.issued')
+before=$(aux4 curl request http://127.0.0.1:18953/issued)
 aux4 curl auth add cached --tokenUrl http://127.0.0.1:18953/token >/dev/null 2>&1
 aux4 curl auth token cached
 aux4 curl auth token cached
 aux4 curl auth token cached
 echo ""
-after=$(aux4 curl request http://127.0.0.1:18953/issued | aux4 json get '$.issued')
+after=$(aux4 curl request http://127.0.0.1:18953/issued)
 echo "fetches: $((after - before))"
 ```
 
@@ -74,11 +74,11 @@ fetches: 1
 requested until something actually needs a token.
 
 ```execute
-before=$(aux4 curl request http://127.0.0.1:18953/issued | aux4 json get '$.issued')
+before=$(aux4 curl request http://127.0.0.1:18953/issued)
 aux4 curl auth add lazy --tokenUrl http://127.0.0.1:18953/token --verify false >/dev/null 2>&1
-middle=$(aux4 curl request http://127.0.0.1:18953/issued | aux4 json get '$.issued')
+middle=$(aux4 curl request http://127.0.0.1:18953/issued)
 aux4 curl auth token lazy >/dev/null 2>&1
-after=$(aux4 curl request http://127.0.0.1:18953/issued | aux4 json get '$.issued')
+after=$(aux4 curl request http://127.0.0.1:18953/issued)
 echo "on add: $((middle - before))  on first use: $((after - middle))"
 ```
 
@@ -89,11 +89,11 @@ on add: 0  on first use: 1
 ### should fetch again once the stored token has expired
 
 ```execute
-before=$(aux4 curl request http://127.0.0.1:18953/issued | aux4 json get '$.short')
+before=$(aux4 curl request http://127.0.0.1:18953/short-count)
 aux4 curl auth add shortlived --tokenUrl http://127.0.0.1:18953/short --verify false >/dev/null 2>&1
 aux4 curl auth token shortlived >/dev/null 2>&1
 aux4 curl auth token shortlived >/dev/null 2>&1
-after=$(aux4 curl request http://127.0.0.1:18953/issued | aux4 json get '$.short')
+after=$(aux4 curl request http://127.0.0.1:18953/short-count)
 echo "fetches: $((after - before))"
 ```
 
@@ -108,10 +108,10 @@ fetches and the rest reuse that result.
 
 ```execute
 aux4 curl auth add shared --tokenUrl http://127.0.0.1:18953/token --verify false >/dev/null 2>&1
-before=$(aux4 curl request http://127.0.0.1:18953/issued | aux4 json get '$.issued')
+before=$(aux4 curl request http://127.0.0.1:18953/issued)
 for i in 1 2 3 4 5; do aux4 curl auth token shared >/dev/null 2>&1 & done
 wait
-after=$(aux4 curl request http://127.0.0.1:18953/issued | aux4 json get '$.issued')
+after=$(aux4 curl request http://127.0.0.1:18953/issued)
 echo "fetches: $((after - before))"
 ```
 
