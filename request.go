@@ -436,6 +436,16 @@ func runRequestWithAuth(args []string, reauth func() ([]string, error)) {
 
 		if bodyFileSize >= 0 {
 			req.ContentLength = bodyFileSize
+
+			// A redirect that preserves the method (307/308) has to send the
+			// body again, and Go can only do that if it knows how to rewind it.
+			// It works that out automatically for in-memory readers but not for
+			// a file, so without this the redirect is silently dropped: empty
+			// output, no error, exit 0. Reopening the file is the rewind.
+			path := bodyFile
+			req.GetBody = func() (io.ReadCloser, error) {
+				return os.Open(path)
+			}
 		}
 
 		for _, h := range headers {

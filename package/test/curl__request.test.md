@@ -442,3 +442,94 @@ echo "exit=$?"
 ```expect
 exit=1
 ```
+
+## following redirects
+
+```timeout
+30000
+```
+
+```beforeAll
+cat > /tmp/aux4-curl-redir-18958.js << 'ENDJS'
+const http = require('http');
+http.createServer((req, res) => {
+  const chunks = [];
+  req.on('data', c => chunks.push(c));
+  req.on('end', () => {
+    const body = Buffer.concat(chunks).toString();
+    const m = req.url.match(/^\/r(\d{3})$/);
+    if (m) {
+      res.writeHead(Number(m[1]), { Location: 'http://127.0.0.1:18958/dest' });
+      return res.end();
+    }
+    if (req.url === '/dest') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ method: req.method, body: body }));
+    }
+    res.writeHead(404);
+    res.end('{}');
+  });
+}).listen(18958, '127.0.0.1');
+ENDJS
+nohup node /tmp/aux4-curl-redir-18958.js >/dev/null 2>&1 &
+for i in $(seq 1 40); do curl -s -o /dev/null http://127.0.0.1:18958/dest 2>/dev/null && break; sleep 0.25; done
+printf 'from-a-file\n' > redirect-body.txt
+```
+
+```afterAll
+pkill -f aux4-curl-redir-18958.js
+rm -f /tmp/aux4-curl-redir-18958.js redirect-body.txt
+```
+
+### should downgrade a post to a get on 301 and 302
+
+This is what the specification requires, and it is why a POST that follows a
+301 arrives with no body.
+
+```execute
+aux4 curl request --method POST --body '{"a":1}' http://127.0.0.1:18958/r301; echo
+aux4 curl request --method POST --body '{"a":1}' http://127.0.0.1:18958/r302; echo
+```
+
+```expect
+{"method":"GET","body":""}
+{"method":"GET","body":""}
+```
+
+### should preserve the method and body on 307 and 308
+
+```execute
+aux4 curl request --method POST --body '{"a":1}' http://127.0.0.1:18958/r307; echo
+aux4 curl request --method POST --body '{"a":1}' http://127.0.0.1:18958/r308; echo
+```
+
+```expect
+{"method":"POST","body":"{\"a\":1}"}
+{"method":"POST","body":"{\"a\":1}"}
+```
+
+### should resend a file body across a method-preserving redirect
+
+A body that has already been read has to be rewound to be sent again. Go works
+that out for in-memory readers but not for a file, so without help the request
+is silently dropped -- empty output, no error, exit 0.
+
+```execute
+aux4 curl request --method POST --bodyFile redirect-body.txt http://127.0.0.1:18958/r307; echo
+aux4 curl request --method POST --bodyFile redirect-body.txt http://127.0.0.1:18958/r308; echo
+```
+
+```expect
+{"method":"POST","body":"from-a-file\n"}
+{"method":"POST","body":"from-a-file\n"}
+```
+
+### should report the status after the redirect, not the redirect itself
+
+```execute
+aux4 curl request --status true http://127.0.0.1:18958/r301
+```
+
+```expect
+200
+```
