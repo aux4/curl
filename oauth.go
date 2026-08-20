@@ -37,6 +37,11 @@ type OAuthToken struct {
 	// reference rather than the resolved value is what keeps the secret out of
 	// the token file entirely.
 	ClientSecretRef string `json:"clientSecretRef,omitempty"`
+	// SecretProvider and Name record where this token's secrets live. They sit
+	// on the token rather than only on Auth because the interactive flow has no
+	// auth configuration, and both flows need to find their secrets again.
+	SecretProvider string `json:"secretProvider,omitempty"`
+	Name           string `json:"name,omitempty"`
 }
 
 // expandHome turns a leading ~ into the user's home directory. Paths are passed
@@ -75,6 +80,21 @@ func loadToken(path string) (*OAuthToken, error) {
 	if err := json.Unmarshal(data, &token); err != nil {
 		return nil, err
 	}
+
+	// The access token was kept out of the file; fetch it back from wherever
+	// curl put it. A missing one is not an error -- it simply means there is
+	// nothing cached yet, which isExpired already treats as needing a fetch.
+	if provider, name := token.secretProvider(); provider != "" && name != "" {
+		for _, secret := range providerSecrets {
+			if secret.get(&token) != "" {
+				continue
+			}
+			if value, err := readProviderSecret(provider, name, secret.field); err == nil {
+				secret.set(&token, value)
+			}
+		}
+	}
+
 	return &token, nil
 }
 
@@ -83,11 +103,55 @@ func saveToken(path string, token *OAuthToken) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(token, "", "  ")
+
+	// With a provider configured the access token is the one thing that must
+	// not land in the file. Everything else -- the endpoint, the grant, the
+	// deadline -- is not secret and stays here, which keeps the expiry check
+	// and the cross-process lock working exactly as before.
+	record := *token
+	if provider, name := token.secretProvider(); provider != "" && name != "" {
+		for _, secret := range providerSecrets {
+			value := secret.get(&record)
+			if value == "" {
+				continue
+			}
+			if err := storeProviderSecret(provider, name, secret.field, value); err != nil {
+				return err
+			}
+			secret.set(&record, "")
+		}
+	}
+
+	data, err := json.MarshalIndent(&record, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0600)
+}
+
+// secretProvider reports where this token's secrets live, and the name they are
+// filed under.
+func (t *OAuthToken) secretProvider() (string, string) {
+	if t.SecretProvider != "" {
+		return t.SecretProvider, t.Name
+	}
+	if t.Auth == nil {
+		return "", ""
+	}
+	return t.Auth.SecretProvider, t.Auth.Name
+}
+
+// providerSecrets are the fields curl hands to a provider rather than writing
+// to disk. The refresh token is the most valuable of the three: it is
+// long-lived and can mint new access tokens on its own.
+var providerSecrets = []struct {
+	field string
+	get   func(*OAuthToken) string
+	set   func(*OAuthToken, string)
+}{
+	{"accessToken", func(t *OAuthToken) string { return t.AccessToken }, func(t *OAuthToken, v string) { t.AccessToken = v }},
+	{"refreshToken", func(t *OAuthToken) string { return t.RefreshToken }, func(t *OAuthToken, v string) { t.RefreshToken = v }},
+	{"clientSecret", func(t *OAuthToken) string { return t.ClientSecret }, func(t *OAuthToken, v string) { t.ClientSecret = v }},
 }
 
 func (t *OAuthToken) isExpired() bool {
@@ -199,6 +263,9 @@ func ensureValidToken(provider string, tokenFile string, definition *AuthConfig)
 		token.Grant = grantClientCredentials
 		token.Auth = definition
 	}
+	if token.Auth != nil && token.Auth.Name == "" {
+		token.Auth.Name = provider
+	}
 
 	if !token.isExpired() {
 		return token, path, nil
@@ -302,7 +369,7 @@ func generateCodeChallenge(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(h[:])
 }
 
-// args: provider clientId clientSecret authUrl tokenUrl scopes callbackPort tokenFile clientSecretRef
+// args: provider clientId clientSecret authUrl tokenUrl scopes callbackPort tokenFile clientSecretRef secretProvider
 func runOAuthLogin(args []string) {
 	if len(args) < 6 {
 		fmt.Fprintf(os.Stderr, "Error: provider, clientId, authUrl, tokenUrl, and scopes are required\n")
@@ -329,6 +396,11 @@ func runOAuthLogin(args []string) {
 	// The interactive flow gets the same treatment as client credentials: the
 	// secret may be named instead of inlined, so an oauth definition can live
 	// in a shared config file too.
+	secretProvider := ""
+	if len(args) > 9 {
+		secretProvider = strings.TrimSpace(args[9])
+	}
+
 	clientSecretRef := ""
 	if clientSecret == "" && len(args) > 8 && strings.TrimSpace(args[8]) != "" {
 		clientSecretRef = strings.TrimSpace(args[8])
@@ -470,6 +542,14 @@ func runOAuthLogin(args []string) {
 		AuthURL:      authURL,
 		TokenURL:     tokenURL,
 		Scopes:       scopes,
+	}
+
+	// With a provider named, the access token, the refresh token and the client
+	// secret all go there instead of into the file. saveToken does the moving;
+	// this only records where.
+	if secretProvider != "" {
+		token.SecretProvider = secretProvider
+		token.Name = provider
 	}
 
 	// When the secret came from a reference, keep the reference and drop the

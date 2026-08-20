@@ -48,6 +48,15 @@ type AuthConfig struct {
 	// ClientSecretRef names the secret instead of holding it, so a definition
 	// can be committed to a shared config file. See resolveSecretRef.
 	ClientSecretRef string `json:"clientSecretRef,omitempty"`
+	// SecretProvider names where curl keeps the secrets it owns. Empty means
+	// the local token file, which is what every existing install keeps doing.
+	SecretProvider string `json:"secretProvider,omitempty"`
+	// Name is the auth name, which is what curl's own secret references are
+	// derived from. It has to survive a round trip through the token file:
+	// without it a later command cannot work out where its secrets live, reads
+	// nothing, and silently falls back to authenticating with an empty secret.
+	// saveAuthToConfig strips it, since a config entry is already keyed by name.
+	Name string `json:"name,omitempty"`
 }
 
 // preset is a bundle of defaults, not a separate code path: every field it sets
@@ -599,6 +608,9 @@ func runAuthAdd(args []string) {
 	}
 
 	config.ClientSecretRef = strings.TrimSpace(at(16))
+	config.SecretProvider = strings.TrimSpace(at(22))
+	config.Name = name
+
 	if config.ClientSecret != "" && config.ClientSecretRef != "" {
 		fmt.Fprintf(os.Stderr, "Error: use either clientSecret or clientSecretRef, not both\n")
 		os.Exit(1)
@@ -617,11 +629,20 @@ func runAuthAdd(args []string) {
 	configName := at(20)
 	save := at(21) == "true"
 
-	// Writing the definition to config only makes sense if it can be shared,
-	// and an inline secret is exactly what makes it unshareable. Refusing is
-	// better than silently writing the secret into a file destined for git.
+	// A secret given inline is handed to the provider and dropped from the
+	// definition, so the user never has to name a reference and the file stays
+	// shareable. Without a provider there is nowhere to put it, and writing it
+	// into a file destined for git is not an option.
+	if config.SecretProvider != "" && config.ClientSecret != "" {
+		if err := storeProviderSecret(config.SecretProvider, name, "clientSecret", config.ClientSecret); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		config.ClientSecret = ""
+	}
+
 	if save && config.ClientSecret != "" {
-		fmt.Fprintf(os.Stderr, "Error: refusing to save an inline clientSecret to %s. Use --clientSecretRef so the file stays shareable\n", configFile)
+		fmt.Fprintf(os.Stderr, "Error: refusing to save an inline clientSecret to %s. Pass --secretProvider so it can be stored, or --clientSecretRef to name one you already keep\n", configFile)
 		os.Exit(1)
 	}
 
@@ -633,6 +654,10 @@ func runAuthAdd(args []string) {
 		ClientID: config.ClientID,
 		Scopes:   config.Scopes,
 		Auth:     config,
+	}
+	if config.SecretProvider != "" {
+		token.SecretProvider = config.SecretProvider
+		token.Name = name
 	}
 
 	// Fetching once at registration turns a typo in the URL or a bad secret

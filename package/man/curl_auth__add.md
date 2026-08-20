@@ -33,6 +33,12 @@ A JWT's `exp` is read without verifying its signature — the token is opaque to
 
 `--authHeader` is the header added to API calls, defaulting to `Authorization: Bearer ${token}`. Set it to something like `X-API-Key: ${token}` for APIs that do not use bearer tokens.
 
+**Letting curl hold the secrets**
+
+`--secretProvider` stores both the client secret you supply and the access token curl fetches in a secret provider rather than in the local token file. The secret is passed in plain — curl derives the reference from the auth name (`aux4-curl/<name>/clientSecret` and `aux4-curl/<name>/accessToken`), so there is nothing to name, record or maintain, and a config file needs only `secretProvider`, which is not sensitive.
+
+The token file keeps the endpoint, grant and expiry, none of which are secret. Without `--secretProvider` behaviour is unchanged. A provider that is not installed fails with a clear message rather than silently falling back.
+
 **Storing the definition in config.yaml**
 
 `--save true` writes the definition into a config file instead of the local token store, under `<config>/auth/<name>`. The rest of the file is preserved. From then on `auth-request`, `auth-stream` and `auth token` can read it with `--configFile` and `--config`, so a machine that has the file needs no registration step at all.
@@ -62,6 +68,7 @@ aux4 curl auth add <name> --tokenUrl <url> [--preset <preset>] [--clientId <id>]
 --expiresPath     Path to the expiry in the response
 --expiresIn       Fallback lifetime in seconds, used when nothing else reports one
 --authHeader      Header template for API calls (default: `Authorization: Bearer ${token}`)
+--secretProvider  Secret provider that stores the client secret and the access token (e.g. `aux4`, `os`)
 --clientSecretRef Secret reference holding the client secret, `<provider>/<vault>/<item>/<field>`
 --save            Write the definition to the config file instead of the local token store (default: `false`)
 --configFile      Config file to write the definition to

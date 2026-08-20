@@ -113,3 +113,27 @@ The reference is deliberately not a `secret://` URI: aux4 resolves a parameter w
 `--clientSecret` on `oauth login` is now optional, since the secret may be supplied by reference instead. Passing it still works exactly as before.
 
 `oauth token` accepts `--configFile` / `--config`, and `oauth status` reports `Grant` and `Can renew` alongside the existing fields.
+
+## curl can hold its own secrets
+
+`--secretProvider` moves both secrets curl deals with out of the local file and into a secret provider:
+
+```bash
+aux4 curl auth add billing --tokenUrl https://auth.example.com/oauth/token \
+  --clientId my-client --clientSecret s3cr3t --secretProvider aux4
+```
+
+The secret is passed in plain. curl stores it and derives the path from the auth name, so nothing has to be named, recorded or maintained:
+
+```text
+secret://aux4/aux4-curl/billing/clientSecret
+secret://aux4/aux4-curl/billing/accessToken
+```
+
+A shared config gains only `secretProvider`, which is not sensitive, and each machine keeps its own credentials at the same path. The token file retains the endpoint, grant and expiry — none of them secret — while the client secret and access token stay with the provider, including on renewal.
+
+Without `--secretProvider` nothing changes. A provider that is not installed fails with a clear message rather than falling back silently.
+
+The interactive flow takes the same flag. There it moves three things — the access token, the **refresh token** and the client secret. The refresh token is the one that matters: long-lived, and able to mint new access tokens on its own, so it is the last thing that should sit in a plain file. Rotated refresh tokens go back to the provider on every renewal.
+
+`--clientSecretRef` is now for the other case only: a secret you already keep somewhere under a path of your own.

@@ -22,6 +22,12 @@ Some providers require extra parameters on the authorization request. Include th
 
 It is deliberately not written as a `secret://` URI: aux4 resolves a parameter whose whole value is one before the command runs, so a URI would arrive here already resolved and be stored as though it were a reference.
 
+**Letting curl hold the secrets**
+
+`--secretProvider` stores the access token, the refresh token and the client secret in a secret provider rather than in the token file, at paths curl derives from the provider name. The refresh token is the important one: it is long-lived and can obtain new access tokens by itself, so it is the last thing that should sit in a plain file. A rotated refresh token is written back to the provider on each renewal.
+
+The token file keeps the endpoints, scopes and expiry, none of which are secret. Without `--secretProvider` behaviour is unchanged.
+
 #### Usage
 
 ```bash

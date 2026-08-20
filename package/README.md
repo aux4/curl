@@ -420,6 +420,42 @@ aux4 curl oauth login pinterest --clientSecretRef 'aux4/Work/Pinterest/clientSec
 
 In both flows the **reference** is what gets stored, never the resolved secret. A client-credentials token re-resolves it on every renewal; an interactive login re-resolves it on refresh. So the secret exists only for the duration of the request that needs it — it is not written into `.oauth/<name>.json`, into config.yaml, into shell history, or into `ps`.
 
+### Letting curl hold the secrets
+
+`--secretProvider` puts both secrets curl deals with into a secret provider instead of a file:
+
+```bash
+aux4 curl auth add billing \
+  --tokenUrl https://auth.example.com/oauth/token \
+  --clientId my-client \
+  --clientSecret s3cr3t \
+  --secretProvider aux4 \
+  --configFile config.yaml --config prod --save true
+```
+
+You pass the secret in plain — there is no reference to invent. curl stores it and derives the path itself:
+
+```text
+secret://aux4/aux4-curl/billing/clientSecret     the credential you supplied
+secret://aux4/aux4-curl/billing/accessToken      the token curl fetched
+```
+
+Because the path is derived from the auth name, nothing records it and nothing has to be maintained. The config file gains only `secretProvider: aux4`, which is not a secret, so it stays shareable — and each machine holds its own credentials at the same path.
+
+The local token file keeps the endpoint, the grant and the expiry, which are not sensitive. Neither the client secret nor the access token is written to it, and a renewed token goes back to the provider.
+
+**Note:** without `--secretProvider` nothing changes — the token file works exactly as it always has. Naming a provider that is not installed fails with a clear message rather than falling back silently.
+
+`--secretProvider` works the same on the interactive flow:
+
+```bash
+aux4 curl oauth login pinterest --clientId abc123 --clientSecret s3cr3t --secretProvider aux4 ...
+```
+
+There it moves three things: the access token, the **refresh token** and the client secret. The refresh token matters most — it is long-lived and can mint new access tokens on its own, so it is the last thing that should sit in a plain file. A rotated refresh token goes back to the provider on every renewal.
+
+`--clientSecretRef` remains for the other case: a secret you already keep somewhere, under a path of your own choosing.
+
 ### `aux4 curl auth token`
 
 Print a valid token to stdout, fetching a new one first if the stored one has expired.

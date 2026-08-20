@@ -299,7 +299,7 @@
         {
           "name": "login",
           "execute": [
-            "${packageDir}/aux4-curl oauth-login values(provider, clientId, clientSecret, authUrl, tokenUrl, scopes, callbackPort, tokenFile, clientSecretRef)"
+            "${packageDir}/aux4-curl oauth-login values(provider, clientId, clientSecret, authUrl, tokenUrl, scopes, callbackPort, tokenFile, clientSecretRef, secretProvider)"
           ],
           "help": {
             "text": "Authenticate with an OAuth2 provider",
@@ -343,6 +343,11 @@
               {
                 "name": "clientSecretRef",
                 "text": "Secret reference holding the client secret (<provider>/<vault>/<item>/<field>)",
+                "default": ""
+              },
+              {
+                "name": "secretProvider",
+                "text": "Secret provider that stores the client secret, access token and refresh token (e.g. aux4, os)",
                 "default": ""
               }
             ]
@@ -459,7 +464,7 @@
         {
           "name": "add",
           "execute": [
-            "${packageDir}/aux4-curl auth-add values(name, tokenUrl, preset, clientId, clientSecret, scopes, audience, method, contentType, credentialsIn, header*, body, tokenPath, expiresPath, expiresIn, authHeader, clientSecretRef, verify, tokenFile, configFile, config, save)"
+            "${packageDir}/aux4-curl auth-add values(name, tokenUrl, preset, clientId, clientSecret, scopes, audience, method, contentType, credentialsIn, header*, body, tokenPath, expiresPath, expiresIn, authHeader, clientSecretRef, verify, tokenFile, configFile, config, save, secretProvider)"
           ],
           "help": {
             "text": "Register a named credential endpoint that issues tokens on demand",
@@ -595,6 +600,11 @@
               {
                 "name": "config",
                 "text": "Config profile to write the definition under",
+                "default": ""
+              },
+              {
+                "name": "secretProvider",
+                "text": "Secret provider that stores the client secret and the token (e.g. aux4, os)",
                 "default": ""
               }
             ]

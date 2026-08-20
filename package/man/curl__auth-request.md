@@ -4,6 +4,10 @@ The `auth-request` command works like `request` but automatically injects the OA
 
 This is the primary way to make authenticated API calls through `aux4 curl`. Any additional headers specified with `--header` are preserved alongside the injected authorization header.
 
+**Reading the definition from a config file**
+
+When the auth is defined in a config file rather than registered locally, pass `--configFile` and `--config`. The definition is read from the file and a token is fetched on first use, so a machine that has never run `auth add` can still authenticate. The file is the source of truth for how a token is obtained, so a changed endpoint or scope takes effect immediately; only the cached token is local state.
+
 #### Usage
 
 ```bash

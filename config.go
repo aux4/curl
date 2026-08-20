@@ -18,6 +18,57 @@ func (e providerMissingError) Error() string { return e.message }
 
 const secretURIPrefix = "secret://"
 
+// curl keeps everything it owns under one vault, at a path derived from the
+// auth name. Deterministic means nothing has to be recorded anywhere: the user
+// never defines, sees or maintains these references, and a shared config needs
+// only to say which provider -- each machine then holds its own secrets at the
+// same path.
+const curlSecretVault = "aux4-curl"
+
+func providerRef(name string) string {
+	return curlSecretVault + "/" + name
+}
+
+// readProviderSecret reads one field curl owns.
+func readProviderSecret(provider string, name string, field string) (string, error) {
+	return resolveSecretRef(provider + "/" + providerRef(name) + "/" + field)
+}
+
+// storeProviderSecret writes one field curl owns.
+//
+// set deliberately refuses to create a missing item, so the first write has to
+// be a create -- which is also why this cannot simply always create: that
+// errors once the item exists.
+func storeProviderSecret(provider string, name string, field string, value string) error {
+	set := exec.Command("aux4", "secret", provider, "set",
+		"--ref", providerRef(name), "--field", field, "--value", value)
+
+	var stderr bytes.Buffer
+	set.Stderr = &stderr
+	if err := set.Run(); err == nil {
+		return nil
+	}
+
+	message := strings.TrimSpace(stderr.String())
+	if hint := missingProviderMessage(provider, message); hint != "" {
+		return providerMissingError{message: hint}
+	}
+
+	create := exec.Command("aux4", "secret", provider, "create",
+		"--vault", curlSecretVault, "--item", name, "--fields", field+"="+value)
+
+	var createErr bytes.Buffer
+	create.Stderr = &createErr
+	if err := create.Run(); err != nil {
+		detail := strings.TrimSpace(createErr.String())
+		if hint := missingProviderMessage(provider, detail); hint != "" {
+			return providerMissingError{message: hint}
+		}
+		return fmt.Errorf("could not store the secret: %s", strings.TrimPrefix(detail, "Error: "))
+	}
+	return nil
+}
+
 // A definition can name its secret instead of carrying it. The reference is
 // deliberately NOT a secret:// URI: the aux4 core resolves any parameter whose
 // whole value is one, so a URI handed to `auth add` would arrive here already
@@ -150,11 +201,21 @@ func missingProviderMessage(provider string, stderr string) string {
 // the reference exists to achieve. The resolved value lives only as long as the
 // request that needs it.
 func (c *AuthConfig) withResolvedCredentials() (*AuthConfig, error) {
-	if c.ClientSecret != "" || c.ClientSecretRef == "" {
+	if c.ClientSecret != "" {
 		return c, nil
 	}
 
-	secret, err := resolveSecretRef(c.ClientSecretRef)
+	// An explicit reference points at a secret the user already keeps
+	// somewhere; otherwise curl reads the one it stored itself.
+	ref := c.ClientSecretRef
+	if ref == "" {
+		if c.SecretProvider == "" || c.Name == "" {
+			return c, nil
+		}
+		ref = c.SecretProvider + "/" + providerRef(c.Name) + "/clientSecret"
+	}
+
+	secret, err := resolveSecretRef(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -179,6 +240,9 @@ func authFromConfig(raw string, name string) (*AuthConfig, error) {
 	}
 
 	definition, ok := definitions[name]
+	if ok && definition != nil {
+		definition.Name = name
+	}
 	if !ok {
 		available := make([]string, 0, len(definitions))
 		for key := range definitions {
@@ -215,6 +279,7 @@ func tokenFromConfig(definition *AuthConfig) *OAuthToken {
 func saveAuthToConfig(configFile string, configName string, name string, definition *AuthConfig) error {
 	shareable := *definition
 	shareable.ClientSecret = ""
+	shareable.Name = ""
 
 	payload, err := json.Marshal(&shareable)
 	if err != nil {

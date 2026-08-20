@@ -4,6 +4,10 @@ The `auth-stream` command works like `stream` but automatically injects the OAut
 
 This is useful for bulk API operations that require authentication, such as creating multiple pins or updating multiple boards.
 
+**Reading the definition from a config file**
+
+When the auth is defined in a config file rather than registered locally, pass `--configFile` and `--config`. The definition is read from the file and a token is fetched on first use, so a machine that has never run `auth add` can still authenticate. The file is the source of truth for how a token is obtained, so a changed endpoint or scope takes effect immediately; only the cached token is local state.
+
 #### Usage
 
 ```bash
