@@ -299,10 +299,10 @@
         {
           "name": "login",
           "execute": [
-            "${packageDir}/aux4-curl oauth-login values(provider, clientId, clientSecret, authUrl, tokenUrl, scopes, callbackPort, tokenFile, clientSecretRef, secretProvider)"
+            "${packageDir}/aux4-curl oauth-login values(provider, clientId, clientSecret, authUrl, tokenUrl, scopes, callbackPort, tokenFile, clientSecretRef, secretProvider, broker)"
           ],
           "help": {
-            "text": "Authenticate with an OAuth2 provider",
+            "text": "Authenticate with an OAuth2 provider (pass --broker to delegate the client secret to an OAuth broker)",
             "variables": [
               {
                 "name": "provider",
@@ -311,7 +311,8 @@
               },
               {
                 "name": "clientId",
-                "text": "OAuth client ID"
+                "text": "OAuth client ID (not needed in --broker mode)",
+                "default": ""
               },
               {
                 "name": "clientSecret",
@@ -320,11 +321,13 @@
               },
               {
                 "name": "authUrl",
-                "text": "Authorization URL"
+                "text": "Authorization URL (not needed in --broker mode)",
+                "default": ""
               },
               {
                 "name": "tokenUrl",
-                "text": "Token exchange URL"
+                "text": "Token exchange URL (not needed in --broker mode)",
+                "default": ""
               },
               {
                 "name": "scopes",
@@ -348,6 +351,11 @@
               {
                 "name": "secretProvider",
                 "text": "Secret provider that stores the client secret, access token and refresh token (e.g. aux4, os)",
+                "default": ""
+              },
+              {
+                "name": "broker",
+                "text": "OAuth broker base URL (e.g. https://host/oauth-broker/api). When set, the broker builds the authorize URL and performs the code exchange and refresh, so this client never handles the client secret",
                 "default": ""
               }
             ]

@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -42,6 +44,12 @@ type OAuthToken struct {
 	// auth configuration, and both flows need to find their secrets again.
 	SecretProvider string `json:"secretProvider,omitempty"`
 	Name           string `json:"name,omitempty"`
+	// BrokerURL and Provider are set when Grant == grantBroker: the token was
+	// obtained through an OAuth broker that holds the client secret, so renewal
+	// goes back to the broker (POST {BrokerURL}/{Provider}/refresh) instead of to
+	// the token endpoint with a secret this client never had.
+	BrokerURL string `json:"brokerUrl,omitempty"`
+	Provider  string `json:"provider,omitempty"`
 }
 
 // expandHome turns a leading ~ into the user's home directory. Paths are passed
@@ -178,7 +186,60 @@ func (t *OAuthToken) reacquire() error {
 	if t.Grant == grantClientCredentials {
 		return refreshClientCredentials(t)
 	}
+	if t.Grant == grantBroker {
+		return refreshViaBroker(t)
+	}
 	return refreshAccessToken(t)
+}
+
+// refreshViaBroker renews a broker-obtained token by POSTing the refresh token
+// back to the broker's refresh route. The broker holds the client secret, so
+// this client never needs it: it hands over the refresh token and gets a fresh
+// access token (and possibly a rotated refresh token) in return.
+func refreshViaBroker(token *OAuthToken) error {
+	if token.RefreshToken == "" {
+		return fmt.Errorf("no refresh token available, please login again")
+	}
+	if token.BrokerURL == "" || token.Provider == "" {
+		return fmt.Errorf("broker token is missing its brokerUrl/provider, please login again")
+	}
+
+	url := strings.TrimRight(token.BrokerURL, "/") + "/" + token.Provider + "/refresh"
+	payload, err := json.Marshal(map[string]string{"refreshToken": token.RefreshToken})
+	if err != nil {
+		return err
+	}
+
+	resp, err := http.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("broker refresh request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("broker refresh failed: %s returned %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("failed to parse broker refresh response: %v", err)
+	}
+
+	at, _ := result["accessToken"].(string)
+	if at == "" {
+		return fmt.Errorf("broker refresh returned no accessToken: %s", strings.TrimSpace(string(body)))
+	}
+	token.AccessToken = at
+	// A provider may or may not rotate the refresh token; the broker returns an
+	// empty string when it does not, in which case the existing one is kept.
+	if rt, ok := result["refreshToken"].(string); ok && rt != "" {
+		token.RefreshToken = rt
+	}
+	if expiresIn, ok := result["expiresIn"].(float64); ok && expiresIn > 0 {
+		token.ExpiresAt = time.Now().Add(time.Duration(expiresIn) * time.Second).Format(time.RFC3339)
+	}
+	return nil
 }
 
 // authHeaderFor renders the outbound header carrying this token. The template
@@ -419,6 +480,15 @@ func runOAuthLogin(args []string) {
 	path := resolveTokenFile(provider, tokenFile)
 	redirectURI := fmt.Sprintf("http://localhost:%s/callback", callbackPort)
 
+	// Broker mode: an OAuth broker (arg 10) holds the client secret, so the
+	// authorize-url and code exchange happen there. The loopback is identical —
+	// only the two crypto steps move server-side, and this client never sees a
+	// secret. clientId/authUrl/tokenUrl are unused in this mode.
+	if len(args) > 10 && strings.TrimSpace(args[10]) != "" {
+		brokerLogin(provider, strings.TrimSpace(args[10]), scopes, callbackPort, redirectURI, path)
+		return
+	}
+
 	state := fmt.Sprintf("%d", time.Now().UnixNano())
 
 	codeVerifier, err := generateCodeVerifier()
@@ -449,54 +519,11 @@ func runOAuthLogin(args []string) {
 	fmt.Fprintf(os.Stderr, "Open this URL in your browser to authorize:\n\n%s\n\n", fullAuthURL)
 	fmt.Fprintf(os.Stderr, "Waiting for callback on port %s...\n", callbackPort)
 
-	codeCh := make(chan string, 1)
-	errCh := make(chan error, 1)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("state") != state {
-			errCh <- fmt.Errorf("state mismatch")
-			http.Error(w, "State mismatch", http.StatusBadRequest)
-			return
-		}
-		if errParam := r.URL.Query().Get("error"); errParam != "" {
-			errCh <- fmt.Errorf("authorization error: %s", errParam)
-			fmt.Fprintf(w, "Authorization failed: %s. You can close this window.", errParam)
-			return
-		}
-		code := r.URL.Query().Get("code")
-		if code == "" {
-			errCh <- fmt.Errorf("no code in callback")
-			http.Error(w, "No code received", http.StatusBadRequest)
-			return
-		}
-		fmt.Fprintf(w, "Authorization successful! You can close this window.")
-		codeCh <- code
-	})
-
-	listener, err := net.Listen("tcp", ":"+callbackPort)
+	code, err := waitForCallbackCode(callbackPort, state)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: could not listen on port %s: %v\n", callbackPort, err)
-		os.Exit(1)
-	}
-
-	server := &http.Server{Handler: mux}
-	go server.Serve(listener)
-
-	var code string
-	select {
-	case code = <-codeCh:
-	case err := <-errCh:
-		server.Shutdown(context.Background())
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
-	case <-time.After(5 * time.Minute):
-		server.Shutdown(context.Background())
-		fmt.Fprintf(os.Stderr, "Error: timed out waiting for callback\n")
-		os.Exit(1)
 	}
-
-	server.Shutdown(context.Background())
 
 	// Exchange code for tokens
 	data := url.Values{
@@ -575,6 +602,156 @@ func runOAuthLogin(args []string) {
 		os.Exit(1)
 	}
 
+	fmt.Fprintf(os.Stderr, "Login successful! Token saved to %s\n", path)
+}
+
+// waitForCallbackCode runs the loopback OAuth redirect listener: it serves the
+// callback endpoint on the given port, validates the returned state, and returns
+// the authorization code. Shared by the local and broker login flows.
+func waitForCallbackCode(callbackPort, state string) (string, error) {
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != state {
+			errCh <- fmt.Errorf("state mismatch")
+			http.Error(w, "State mismatch", http.StatusBadRequest)
+			return
+		}
+		if errParam := r.URL.Query().Get("error"); errParam != "" {
+			errCh <- fmt.Errorf("authorization error: %s", errParam)
+			fmt.Fprintf(w, "Authorization failed: %s. You can close this window.", errParam)
+			return
+		}
+		code := r.URL.Query().Get("code")
+		if code == "" {
+			errCh <- fmt.Errorf("no code in callback")
+			http.Error(w, "No code received", http.StatusBadRequest)
+			return
+		}
+		fmt.Fprintf(w, "Authorization successful! You can close this window.")
+		codeCh <- code
+	})
+
+	listener, err := net.Listen("tcp", ":"+callbackPort)
+	if err != nil {
+		return "", fmt.Errorf("could not listen on port %s: %v", callbackPort, err)
+	}
+
+	server := &http.Server{Handler: mux}
+	go server.Serve(listener)
+	defer server.Shutdown(context.Background())
+
+	select {
+	case code := <-codeCh:
+		return code, nil
+	case err := <-errCh:
+		return "", err
+	case <-time.After(5 * time.Minute):
+		return "", fmt.Errorf("timed out waiting for callback")
+	}
+}
+
+// brokerLogin performs the loopback authorization-code flow against an OAuth
+// broker that holds the client secret. It asks the broker to build the
+// authorization URL (which returns the PKCE verifier), runs the same local
+// callback listener, then hands the code back to the broker to exchange for
+// tokens. The stored token records a grantBroker grant + the broker URL, so
+// future refreshes route back to the broker too — the client never sees a secret.
+func brokerLogin(provider, brokerURL, scopes, callbackPort, redirectURI, path string) {
+	base := strings.TrimRight(brokerURL, "/")
+	state := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	// 1. Ask the broker to build the authorization URL. It holds the client id
+	// and returns the PKCE code verifier we must keep for the exchange.
+	authQuery := url.Values{
+		"redirectUri": {redirectURI},
+		"scopes":      {scopes},
+		"state":       {state},
+	}
+	authResp, err := http.Get(base + "/" + provider + "/authorize-url?" + authQuery.Encode())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: broker authorize-url request failed: %v\n", err)
+		os.Exit(1)
+	}
+	authBody, _ := io.ReadAll(authResp.Body)
+	authResp.Body.Close()
+	if authResp.StatusCode < 200 || authResp.StatusCode >= 300 {
+		fmt.Fprintf(os.Stderr, "Error: broker authorize-url returned %d: %s\n", authResp.StatusCode, strings.TrimSpace(string(authBody)))
+		os.Exit(1)
+	}
+	var authResult struct {
+		URL          string `json:"url"`
+		CodeVerifier string `json:"codeVerifier"`
+		State        string `json:"state"`
+	}
+	if err := json.Unmarshal(authBody, &authResult); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: could not parse broker authorize-url response: %v\n", err)
+		os.Exit(1)
+	}
+	if authResult.URL == "" || authResult.CodeVerifier == "" {
+		fmt.Fprintf(os.Stderr, "Error: broker authorize-url response missing url/codeVerifier\n")
+		os.Exit(1)
+	}
+
+	// 2. Send the user through the provider's consent screen and catch the code
+	// on the loopback — identical to the non-broker flow.
+	fmt.Fprintf(os.Stderr, "Open this URL in your browser to authorize:\n\n%s\n\n", authResult.URL)
+	fmt.Fprintf(os.Stderr, "Waiting for callback on port %s...\n", callbackPort)
+	code, err := waitForCallbackCode(callbackPort, state)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 3. Hand the code to the broker to exchange for tokens (it holds the secret).
+	exchangePayload, _ := json.Marshal(map[string]string{
+		"code":         code,
+		"codeVerifier": authResult.CodeVerifier,
+		"redirectUri":  redirectURI,
+	})
+	exResp, err := http.Post(base+"/"+provider+"/exchange", "application/json", bytes.NewReader(exchangePayload))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: broker exchange request failed: %v\n", err)
+		os.Exit(1)
+	}
+	exBody, _ := io.ReadAll(exResp.Body)
+	exResp.Body.Close()
+	if exResp.StatusCode < 200 || exResp.StatusCode >= 300 {
+		fmt.Fprintf(os.Stderr, "Error: broker exchange returned %d: %s\n", exResp.StatusCode, strings.TrimSpace(string(exBody)))
+		os.Exit(1)
+	}
+	var tokens struct {
+		AccessToken  string  `json:"accessToken"`
+		RefreshToken string  `json:"refreshToken"`
+		ExpiresIn    float64 `json:"expiresIn"`
+	}
+	if err := json.Unmarshal(exBody, &tokens); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: could not parse broker exchange response: %v\n", err)
+		os.Exit(1)
+	}
+	if tokens.AccessToken == "" {
+		fmt.Fprintf(os.Stderr, "Error: broker exchange returned no accessToken: %s\n", strings.TrimSpace(string(exBody)))
+		os.Exit(1)
+	}
+
+	token := &OAuthToken{
+		Grant:        grantBroker,
+		BrokerURL:    base,
+		Provider:     provider,
+		Scopes:       scopes,
+		AccessToken:  tokens.AccessToken,
+		RefreshToken: tokens.RefreshToken,
+	}
+	if tokens.ExpiresIn > 0 {
+		token.ExpiresAt = time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second).Format(time.RFC3339)
+	}
+
+	if err := saveToken(path, token); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving token: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Fprintf(os.Stderr, "Login successful! Token saved to %s\n", path)
 }
 

@@ -23,7 +23,11 @@ const (
 	// Grant recorded on tokens obtained from client credentials, as opposed to
 	// the interactive authorization_code flow that `oauth login` performs.
 	grantClientCredentials = "client_credentials"
-	defaultAuthHeader      = "Authorization: Bearer ${token}"
+	// Grant recorded on tokens obtained through an OAuth broker: the interactive
+	// flow ran, but the code exchange (and later the refresh) happened at the
+	// broker, which holds the client secret this client never sees.
+	grantBroker       = "broker"
+	defaultAuthHeader = "Authorization: Bearer ${token}"
 )
 
 // AuthConfig is the recipe for obtaining a token from a credential endpoint:
