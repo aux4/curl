@@ -430,7 +430,7 @@ func generateCodeChallenge(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(h[:])
 }
 
-// args: provider clientId clientSecret authUrl tokenUrl scopes callbackPort tokenFile clientSecretRef secretProvider
+// args: provider clientId clientSecret authUrl tokenUrl scopes callbackPort tokenFile clientSecretRef secretProvider broker brokerToken
 func runOAuthLogin(args []string) {
 	if len(args) < 6 {
 		fmt.Fprintf(os.Stderr, "Error: provider, clientId, authUrl, tokenUrl, and scopes are required\n")
@@ -485,7 +485,11 @@ func runOAuthLogin(args []string) {
 	// only the two crypto steps move server-side, and this client never sees a
 	// secret. clientId/authUrl/tokenUrl are unused in this mode.
 	if len(args) > 10 && strings.TrimSpace(args[10]) != "" {
-		brokerLogin(provider, strings.TrimSpace(args[10]), scopes, callbackPort, redirectURI, path)
+		brokerToken := ""
+		if len(args) > 11 {
+			brokerToken = strings.TrimSpace(args[11])
+		}
+		brokerLogin(provider, strings.TrimSpace(args[10]), scopes, brokerToken, path)
 		return
 	}
 
@@ -659,24 +663,62 @@ func waitForCallbackCode(callbackPort, state string) (string, error) {
 // callback listener, then hands the code back to the broker to exchange for
 // tokens. The stored token records a grantBroker grant + the broker URL, so
 // future refreshes route back to the broker too — the client never sees a secret.
-func brokerLogin(provider, brokerURL, scopes, callbackPort, redirectURI, path string) {
-	base := strings.TrimRight(brokerURL, "/")
-	state := fmt.Sprintf("%d", time.Now().UnixNano())
-
-	// 1. Ask the broker to build the authorization URL. It holds the client id
-	// and returns the PKCE code verifier we must keep for the exchange.
-	authQuery := url.Values{
-		"redirectUri": {redirectURI},
-		"scopes":      {scopes},
-		"state":       {state},
+// brokerGet / brokerPost issue the broker HTTP calls, attaching the aux4 identity
+// token as a Bearer header when one is provided. A secured broker (the default:
+// OAUTH_APP_PUBLIC unset on the VM) requires it; a public broker ignores it.
+func brokerGet(rawurl, token string) (*http.Response, error) {
+	req, err := http.NewRequest("GET", rawurl, nil)
+	if err != nil {
+		return nil, err
 	}
-	authResp, err := http.Get(base + "/" + provider + "/authorize-url?" + authQuery.Encode())
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return http.DefaultClient.Do(req)
+}
+
+func brokerPost(rawurl, token, contentType string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest("POST", rawurl, body)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Content-Type", contentType)
+	return http.DefaultClient.Do(req)
+}
+
+func brokerLogin(provider, brokerURL, scopes, brokerToken, path string) {
+	base := strings.TrimRight(brokerURL, "/")
+
+	// The session id is a high-entropy value only this client knows; it is both
+	// the OAuth state and the poll key. The parked code cannot be redeemed without
+	// the PKCE verifier held here, so even a guessed session id yields nothing.
+	session, err := generateCodeVerifier()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating session id: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 1. Ask the broker to build the authorization URL. It holds the client id,
+	// sets its OWN public callback as the redirect (so no loopback is needed), and
+	// returns the PKCE code verifier we must keep for the exchange.
+	authQuery := url.Values{
+		"scopes": {scopes},
+		"state":  {session},
+	}
+	authResp, err := brokerGet(base+"/"+provider+"/authorize-url?"+authQuery.Encode(), brokerToken)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: broker authorize-url request failed: %v\n", err)
 		os.Exit(1)
 	}
 	authBody, _ := io.ReadAll(authResp.Body)
 	authResp.Body.Close()
+	if authResp.StatusCode == 401 || authResp.StatusCode == 403 {
+		fmt.Fprintf(os.Stderr, "Error: the broker at %s requires authentication (HTTP %d) but no valid broker token was supplied. Pass --brokerToken (the calling package normally supplies this — e.g. your aux4 identity for an aux4 broker).\n", base, authResp.StatusCode)
+		os.Exit(1)
+	}
 	if authResp.StatusCode < 200 || authResp.StatusCode >= 300 {
 		fmt.Fprintf(os.Stderr, "Error: broker authorize-url returned %d: %s\n", authResp.StatusCode, strings.TrimSpace(string(authBody)))
 		os.Exit(1)
@@ -695,23 +737,58 @@ func brokerLogin(provider, brokerURL, scopes, callbackPort, redirectURI, path st
 		os.Exit(1)
 	}
 
-	// 2. Send the user through the provider's consent screen and catch the code
-	// on the loopback — identical to the non-broker flow.
+	// 2. Send the user through consent on ANY device. The provider redirects the
+	// browser to the broker's own callback (not a loopback), which parks the code;
+	// we poll the broker for it. This is what makes phone/second-device approval work.
 	fmt.Fprintf(os.Stderr, "Open this URL in your browser to authorize:\n\n%s\n\n", authResult.URL)
-	fmt.Fprintf(os.Stderr, "Waiting for callback on port %s...\n", callbackPort)
-	code, err := waitForCallbackCode(callbackPort, state)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	fmt.Fprintf(os.Stderr, "Waiting for authorization...\n")
+	code := ""
+	deadline := time.Now().Add(10 * time.Minute)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+		pollResp, perr := brokerGet(base+"/session/"+session, brokerToken)
+		if perr != nil {
+			continue
+		}
+		pollBody, _ := io.ReadAll(pollResp.Body)
+		pollResp.Body.Close()
+		if pollResp.StatusCode < 200 || pollResp.StatusCode >= 300 {
+			continue
+		}
+		var poll struct {
+			Status string `json:"status"`
+			Code   string `json:"code"`
+			Error  string `json:"error"`
+		}
+		if err := json.Unmarshal(pollBody, &poll); err != nil {
+			continue
+		}
+		switch poll.Status {
+		case "ready":
+			code = poll.Code
+		case "error":
+			fmt.Fprintf(os.Stderr, "Error: authorization failed: %s\n", poll.Error)
+			os.Exit(1)
+		case "expired":
+			fmt.Fprintf(os.Stderr, "Error: login session expired, please try again\n")
+			os.Exit(1)
+		}
+		if code != "" {
+			break
+		}
+	}
+	if code == "" {
+		fmt.Fprintf(os.Stderr, "Error: timed out waiting for authorization\n")
 		os.Exit(1)
 	}
 
 	// 3. Hand the code to the broker to exchange for tokens (it holds the secret).
+	// The redirect URI is the broker's own callback, so this client never sends one.
 	exchangePayload, _ := json.Marshal(map[string]string{
 		"code":         code,
 		"codeVerifier": authResult.CodeVerifier,
-		"redirectUri":  redirectURI,
 	})
-	exResp, err := http.Post(base+"/"+provider+"/exchange", "application/json", bytes.NewReader(exchangePayload))
+	exResp, err := brokerPost(base+"/"+provider+"/exchange", brokerToken, "application/json", bytes.NewReader(exchangePayload))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: broker exchange request failed: %v\n", err)
 		os.Exit(1)

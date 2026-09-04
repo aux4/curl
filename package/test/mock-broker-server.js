@@ -16,10 +16,32 @@ const http = require("http");
 
 const PORT = Number(process.env.MOCK_BROKER_PORT || 8799);
 
+// When REQUIRE_AUTH is set the mock behaves like a *secured* broker: every route
+// demands `Authorization: Bearer <token>` and returns 401 otherwise. This mirrors
+// aux4/oauth-app with OAUTH_APP_PUBLIC unset, so the client's token-passing and its
+// 401 handling can both be exercised.
+const REQUIRE_AUTH = !!process.env.REQUIRE_AUTH;
+
 const server = http.createServer((req, res) => {
   let body = "";
   req.on("data", (chunk) => (body += chunk));
   req.on("end", () => {
+    const authHeader = req.headers["authorization"] || "";
+    // Record the Authorization header seen on the first gated call so a test can
+    // assert the client sent the expected Bearer token.
+    if (process.env.AUTH_FILE && req.url.startsWith("/google/authorize-url")) {
+      try {
+        require("fs").writeFileSync(process.env.AUTH_FILE, authHeader);
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    if (REQUIRE_AUTH && !authHeader.startsWith("Bearer ")) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+
     if (req.method === "GET" && req.url.startsWith("/google/authorize-url")) {
       // Record the state the client generated so a test can drive the loopback
       // callback with the matching state (mimicking the browser redirect).
@@ -39,6 +61,15 @@ const server = http.createServer((req, res) => {
           state: state
         })
       );
+      return;
+    }
+
+    if (req.method === "GET" && req.url.startsWith("/session/")) {
+      // Poll route (hosted-callback + poll flow): a real browser would have hit
+      // the broker's /callback and parked the code; the mock simulates that by
+      // returning the parked code immediately so the exchange can proceed.
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ready", code: "good" }));
       return;
     }
 

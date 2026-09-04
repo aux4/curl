@@ -299,7 +299,7 @@
         {
           "name": "login",
           "execute": [
-            "${packageDir}/aux4-curl oauth-login values(provider, clientId, clientSecret, authUrl, tokenUrl, scopes, callbackPort, tokenFile, clientSecretRef, secretProvider, broker)"
+            "${packageDir}/aux4-curl oauth-login values(provider, clientId, clientSecret, authUrl, tokenUrl, scopes, callbackPort, tokenFile, clientSecretRef, secretProvider, broker, brokerToken)"
           ],
           "help": {
             "text": "Authenticate with an OAuth2 provider (pass --broker to delegate the client secret to an OAuth broker)",
@@ -356,6 +356,11 @@
               {
                 "name": "broker",
                 "text": "OAuth broker base URL (e.g. https://host/oauth-broker/api). When set, the broker builds the authorize URL and performs the code exchange and refresh, so this client never handles the client secret",
+                "default": ""
+              },
+              {
+                "name": "brokerToken",
+                "text": "Bearer token to send to a secured broker (Authorization: Bearer <token>). Optional — supplied by the caller that knows the broker's auth (e.g. an aux4 identity token). Empty means no Authorization header is sent",
                 "default": ""
               }
             ]

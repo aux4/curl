@@ -1,21 +1,16 @@
-# aux4/curl 1.3.1
+# aux4/curl 1.3.2
 
 ## Added
 
-- **`oauth login --broker <url>`** — an OAuth-broker-backed login. The broker
-  holds the client secret: it builds the authorization URL (returning the PKCE
-  verifier) and performs the code exchange, while curl runs the same local
-  loopback callback as the normal flow. The stored token records a `broker` grant
-  plus the broker URL, so **this client never handles a client secret** — at login
-  or at refresh. `--clientId` / `--authUrl` / `--tokenUrl` are not needed in this
-  mode.
+- **`--brokerToken` for broker login.** `curl oauth login --broker <url>` now
+  attaches `Authorization: Bearer <brokerToken>` to the broker's authorize-url,
+  session-poll and exchange calls when a token is supplied, so a secured broker
+  can authenticate the caller. curl is pure mechanism here: it does not decide
+  where the token comes from — the calling package supplies it (e.g. an aux4
+  identity token for an aux4 broker). An empty `--brokerToken` sends no header.
 
-- **`grant: broker` token refresh** — when a broker-obtained access token expires,
-  curl renews it by POSTing the refresh token back to the broker's
-  `POST {brokerUrl}/{provider}/refresh` route (the broker holds the secret),
-  rotating the refresh token when the provider returns a new one.
+## Changed
 
-## Internal
-
-- Extracted the loopback callback listener into a shared helper reused by both the
-  local and broker login flows (no behaviour change to the existing flow).
+- A `401`/`403` from the broker's authorize-url now yields a clear message
+  ("requires authentication … no valid broker token was supplied. Pass
+  --brokerToken …") instead of a generic HTTP error.
